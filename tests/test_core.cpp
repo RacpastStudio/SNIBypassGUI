@@ -19,17 +19,32 @@
 //
 // No test framework: a CHECK macro accumulates failures and main() returns non-zero
 // on any failure, which ctest reports as a failed test.
+#include <winsock2.h>
+#include <ws2tcpip.h>
+
+#include <windows.h>
+
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
 
 #include "app/filesystem.h"
 #include "app/version.h"
+#include "dns/dns_proxy.h"
+#include "dns/dnscrypt_client.h"
+#include "dns/dnsstamp.h"
+#include "dns/doh_client.h"
+#include "dns/http_response.h"
 #include "dns/message.h"
+#include "dns/network_utils.h"
 #include "dns/redirector.h"
 #include "dns/rules.h"
+#include "dns/socket_utils.h"
+#include "dns/tcp_session.h"
 #include "update/client.h"
 #include "update/json.h"
 
@@ -582,6 +597,276 @@ void TestRepairBudget() {
     for (unsigned i = 0; i < kMax * 4; ++i) CHECK(sparse.Allow(i * kWindow));
 }
 
+void TestIpEndpointParsing() {
+    using namespace Dns::NetworkUtils;
+
+    IpEndpoint endpoint;
+    CHECK(ParseIpEndpoint("1.1.1.1", 443, endpoint));
+    CHECK(endpoint.address.ss_family == AF_INET);
+    CHECK(ntohs(reinterpret_cast<const sockaddr_in&>(endpoint.address).sin_port) == 443);
+    CHECK(endpoint.host == "1.1.1.1");
+
+    CHECK(ParseIpEndpoint("9.9.9.9:853", 443, endpoint));
+    CHECK(endpoint.address.ss_family == AF_INET);
+    CHECK(ntohs(reinterpret_cast<const sockaddr_in&>(endpoint.address).sin_port) == 853);
+
+    CHECK(ParseIpEndpoint("[2001:db8::1]:853", 443, endpoint));
+    CHECK(endpoint.address.ss_family == AF_INET6);
+    CHECK(ntohs(reinterpret_cast<const sockaddr_in6&>(endpoint.address).sin6_port) == 853);
+    CHECK(endpoint.host == "2001:db8::1");
+
+    CHECK(ParseIpEndpoint("2001:db8::2", 443, endpoint));
+    CHECK(endpoint.address.ss_family == AF_INET6);
+    CHECK(ntohs(reinterpret_cast<const sockaddr_in6&>(endpoint.address).sin6_port) == 443);
+
+    CHECK(!ParseIpEndpoint("[2001:db8::1", 443, endpoint));
+    CHECK(!ParseIpEndpoint("[2001:db8::1]junk", 443, endpoint));
+    CHECK(!ParseIpEndpoint("1.1.1.1:0", 443, endpoint));
+    CHECK(!ParseIpEndpoint("1.1.1.1:65536", 443, endpoint));
+    CHECK(!ParseIpEndpoint("resolver.example:443", 443, endpoint));
+}
+
+void TestDnsStamps() {
+    using namespace Dns;
+
+    const DNSStamp cloudflare = ParseDNSStamp(
+        "sdns://AgcAAAAAAAAABzEuMS4xLjEAEmRucy5jbG91ZGZsYXJlLmNvbQovZG5zLXF1ZXJ5");
+    CHECK(cloudflare.valid);
+    CHECK(cloudflare.protocol == StampProtocol::DoH);
+    CHECK(cloudflare.address == "1.1.1.1");
+    CHECK(cloudflare.hostname == "dns.cloudflare.com");
+    CHECK(cloudflare.path == "/dns-query");
+    CHECK(cloudflare.hashes.empty());
+
+    const DNSStamp pinned = ParseDNSStamp(
+        "sdns://AgcAAAAAAAAADDgwLjY3LjE2OS40MCCMUDOXP_5P8e8KqSmE_JMoG6epJ474v2QSJriY0Q1OdApuczEuZmRuLmZyCi9kbnMtcXVlcnk");
+    CHECK(pinned.valid);
+    CHECK(pinned.hashes.size() == 1);
+    CHECK(pinned.hashes[0].size() == 32);
+
+    CHECK(
+        !ParseDNSStamp(
+             "sdns://AQcAAAAAAAAAEzk1LjIxNi4xMzguMTQxOjg0NDMguorzbtc_JWEU0KBhGLZWuvInIeGd-R5CcEHYS-SIz7cXMi5kbnNjcnlwdC1jZXJ0Lm53cHMuZmkAA")
+             .valid);
+}
+
+void TestBundledDnsProxyConfig() {
+    const std::wstring path =
+        std::wstring(SNIB_SOURCE_DIR) + L"/resources/payload/data/dns_proxy.ini";
+    const Dns::DnsProxyConfig config = Dns::DnsProxyConfig::Load(path);
+    CHECK(config.upstreams.size() == 20);
+    CHECK(config.EnabledCount() == 20);
+
+    for (const Dns::DnsProxyEndpoint& endpoint : config.upstreams) {
+        CHECK(endpoint.enabled);
+        CHECK(!endpoint.address.empty());
+        if (endpoint.protocol == Dns::DnsProxyProtocol::DNSCrypt) {
+            CHECK(endpoint.publicKey.size() == 32);
+            CHECK(!endpoint.providerName.empty());
+        } else {
+            CHECK(!endpoint.hostname.empty());
+        }
+    }
+}
+
+void TestHttpResponseParser() {
+    using Dns::HttpResponseParser;
+
+    const std::string fixedHead =
+        "HTTP/1.1 200 OK\r\nContent-Length-X: 1\r\nContent-Length: 8\r\n\r\n";
+    std::vector<uint8_t> fixed(fixedHead.begin(), fixedHead.end());
+    const std::vector<uint8_t> binary = {0x12, 0x34, '\r', '\n', '0', '\r', '\n', 0xFF};
+    fixed.insert(fixed.end(), binary.begin(), binary.end());
+
+    HttpResponseParser fixedParser;
+    for (size_t i = 0; i < fixed.size(); ++i) {
+        const auto result = fixedParser.Feed(&fixed[i], 1);
+        CHECK(result == (i + 1 == fixed.size() ? HttpResponseParser::Result::Complete
+                                               : HttpResponseParser::Result::NeedMore));
+    }
+    CHECK(fixedParser.body() == binary);
+
+    const std::string chunkHead = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n7\r\n";
+    std::vector<uint8_t> chunked(chunkHead.begin(), chunkHead.end());
+    const std::vector<uint8_t> chunkBody = {1, '\r', '\n', '0', '\r', '\n', 2};
+    chunked.insert(chunked.end(), chunkBody.begin(), chunkBody.end());
+    const std::string chunkTail = "\r\n0\r\nX-Test: yes\r\n\r\n";
+    chunked.insert(chunked.end(), chunkTail.begin(), chunkTail.end());
+
+    HttpResponseParser chunkParser;
+    for (size_t offset = 0; offset < chunked.size();) {
+        const size_t count = std::min<size_t>(3, chunked.size() - offset);
+        const auto result = chunkParser.Feed(chunked.data() + offset, count);
+        offset += count;
+        if (offset < chunked.size()) CHECK(result == HttpResponseParser::Result::NeedMore);
+    }
+    CHECK(chunkParser.result() == HttpResponseParser::Result::Complete);
+    CHECK(chunkParser.body() == chunkBody);
+
+    const std::string unframed = "HTTP/1.1 200 OK\r\nContent-Length-X: 1\r\n\r\nabc";
+    HttpResponseParser unframedParser;
+    CHECK(unframedParser.Feed(reinterpret_cast<const uint8_t*>(unframed.data()),
+                              unframed.size()) == HttpResponseParser::Result::Error);
+
+    const std::string truncated = "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nabc";
+    HttpResponseParser truncatedParser;
+    CHECK(truncatedParser.Feed(reinterpret_cast<const uint8_t*>(truncated.data()),
+                               truncated.size()) == HttpResponseParser::Result::NeedMore);
+    CHECK(truncatedParser.Finish() == HttpResponseParser::Result::Error);
+}
+
+void TestTcpSessionFraming() {
+    using namespace Dns;
+
+    const std::vector<uint8_t> first(kQueryACom, kQueryACom + sizeof(kQueryACom));
+    const std::vector<uint8_t> second(kQueryAaaaCom, kQueryAaaaCom + sizeof(kQueryAaaaCom));
+    const std::vector<uint8_t> framedFirst = EncodeTcpMessage(first);
+    const std::vector<uint8_t> framedSecond = EncodeTcpMessage(second);
+
+    TcpSessionReader reader;
+    CHECK(reader.Append(framedFirst.data(), 1) == TcpSessionReader::State::Incomplete);
+    CHECK(reader.Append(framedFirst.data() + 1, framedFirst.size() - 1) ==
+          TcpSessionReader::State::Ready);
+    CHECK(reader.TakeMessage() == first);
+
+    std::vector<uint8_t> pipelined = framedFirst;
+    pipelined.insert(pipelined.end(), framedSecond.begin(), framedSecond.end());
+    CHECK(reader.Append(pipelined.data(), pipelined.size()) == TcpSessionReader::State::Ready);
+    CHECK(reader.TakeMessage() == first);
+    CHECK(reader.HasMessage());
+    CHECK(reader.TakeMessage() == second);
+
+    std::vector<uint8_t> maximum(Dns::SocketUtils::kMaxMessage, 0x5A);
+    const std::vector<uint8_t> framedMaximum = EncodeTcpMessage(maximum);
+    CHECK(framedMaximum.size() == maximum.size() + 2);
+    CHECK(reader.Append(framedMaximum.data(), framedMaximum.size()) ==
+          TcpSessionReader::State::Ready);
+    CHECK(reader.TakeMessage() == maximum);
+
+    const uint8_t emptyMessage[] = {0, 0};
+    CHECK(reader.Append(emptyMessage, sizeof(emptyMessage)) == TcpSessionReader::State::Broken);
+    reader.Clear();
+}
+
+std::vector<uint8_t> BuildLiveDnsQuery() {
+    return {
+        0x12, 0x34,  // transaction ID
+        0x01, 0x00,  // recursion desired
+        0x00, 0x01,  // one question
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 'e',  'x',  'a',  'm',
+        'p',  'l',  'e',  0x03, 'c',  'o',  'm',  0x00, 0x00, 0x01,  // A
+        0x00, 0x01,                                                  // IN
+    };
+}
+
+bool IsSuccessfulLiveDnsAnswer(const std::vector<uint8_t>& response, uint16_t id = 0x1234) {
+    Dns::Query parsed;
+    return response.size() >= 12 && response[0] == static_cast<uint8_t>(id >> 8) &&
+           response[1] == static_cast<uint8_t>(id) && (response[2] & 0x80) != 0 &&
+           (response[3] & 0x0F) == Dns::kRcodeNoError &&
+           (response[6] != 0 || response[7] != 0) &&
+           !Dns::IsTruncated(response.data(), response.size()) &&
+           Dns::ParseQuery(response.data(), response.size(), parsed);
+}
+
+void TestLiveDnsProxy(const std::vector<uint8_t>& query) {
+    const std::wstring configPath =
+        std::wstring(SNIB_SOURCE_DIR) + L"/resources/payload/data/dns_proxy.ini";
+
+    Dns::DnsProxy proxy;
+    const bool loaded = proxy.LoadConfig(configPath);
+    CHECK(loaded);
+    const bool started = loaded && proxy.Start();
+    CHECK(started);
+
+    Dns::NetworkUtils::IpEndpoint local;
+    CHECK(Dns::NetworkUtils::ParseIpEndpoint("127.191.98.10:53", 53, local));
+    if (started && local.length != 0) {
+        Dns::SocketUtils::SocketHandle udp(
+            socket(local.address.ss_family, SOCK_DGRAM, IPPROTO_UDP));
+        CHECK(udp.IsValid());
+        if (udp.IsValid()) {
+            CHECK(Dns::NetworkUtils::SendUdp(udp, query,
+                                             reinterpret_cast<const sockaddr*>(&local.address),
+                                             local.length, 3000));
+            CHECK(IsSuccessfulLiveDnsAnswer(Dns::NetworkUtils::RecvUdp(udp, 12000)));
+        }
+
+        // nginx resolves slightly more than twenty dynamic upstream names during
+        // a cold start. Send the same-sized burst without waiting between sends:
+        // queue starvation used to answer the later clients with SERVFAIL even
+        // though all configured transports were healthy.
+        constexpr size_t kBurstQueryCount = 24;
+        std::vector<Dns::SocketUtils::SocketHandle> burstSockets;
+        burstSockets.reserve(kBurstQueryCount);
+        for (size_t i = 0; i < kBurstQueryCount; ++i) {
+            burstSockets.emplace_back(socket(local.address.ss_family, SOCK_DGRAM, IPPROTO_UDP));
+            CHECK(burstSockets.back().IsValid());
+            if (!burstSockets.back().IsValid()) continue;
+
+            std::vector<uint8_t> burstQuery = query;
+            const uint16_t id = static_cast<uint16_t>(0x4000 + i);
+            burstQuery[0] = static_cast<uint8_t>(id >> 8);
+            burstQuery[1] = static_cast<uint8_t>(id);
+            CHECK(Dns::NetworkUtils::SendUdp(burstSockets.back(), burstQuery,
+                                             reinterpret_cast<const sockaddr*>(&local.address),
+                                             local.length, 3000));
+        }
+        for (size_t i = 0; i < burstSockets.size(); ++i) {
+            if (!burstSockets[i].IsValid()) continue;
+            const uint16_t id = static_cast<uint16_t>(0x4000 + i);
+            CHECK(IsSuccessfulLiveDnsAnswer(Dns::NetworkUtils::RecvUdp(burstSockets[i], 12000),
+                                            id));
+        }
+
+        Dns::SocketUtils::SocketHandle tcp(
+            socket(local.address.ss_family, SOCK_STREAM, IPPROTO_TCP));
+        CHECK(tcp.IsValid());
+        if (tcp.IsValid() &&
+            Dns::NetworkUtils::ConnectWithTimeout(
+                tcp, reinterpret_cast<const sockaddr*>(&local.address), local.length, 3000)) {
+            const std::vector<uint8_t> framed = Dns::EncodeTcpMessage(query);
+            CHECK(Dns::NetworkUtils::SendAll(tcp, framed, 3000));
+            CHECK(IsSuccessfulLiveDnsAnswer(Dns::NetworkUtils::RecvLengthPrefixed(tcp, 12000)));
+        } else {
+            CHECK(false);
+        }
+    }
+
+    proxy.Stop();
+    CHECK(!proxy.Running());
+}
+
+void TestLiveDnsTransports() {
+    if (std::getenv("SNIB_RUN_NETWORK_TESTS") == nullptr) return;
+
+    const bool winsockReady = Dns::SocketUtils::EnsureWinsock();
+    CHECK(winsockReady);
+    if (!winsockReady) return;
+
+    const std::vector<uint8_t> query = BuildLiveDnsQuery();
+
+    const std::vector<uint8_t> doh =
+        Dns::QueryDoH(query, "1.12.12.12", "doh.pub", "/dns-query", {}, 10000);
+    CHECK(IsSuccessfulLiveDnsAnswer(doh));
+
+    // System trust must succeed above, while an explicit stamp pin mismatch must
+    // reject the same otherwise-valid server chain.
+    const std::vector<std::vector<uint8_t>> wrongPin(1, std::vector<uint8_t>(32, 0));
+    CHECK(Dns::QueryDoH(query, "1.12.12.12", "doh.pub", "/dns-query", wrongPin, 10000).empty());
+
+    const Dns::DNSStamp dnscrypt = Dns::ParseDNSStamp(
+        "sdns://AQcAAAAAAAAAEzk1LjIxNi4xMzguMTQxOjg0NDMguorzbtc_JWEU0KBhGLZWuvInIeGd-R5CcEHYS-SIz7cXMi5kbnNjcnlwdC1jZXJ0Lm53cHMuZmk");
+    CHECK(dnscrypt.valid);
+    if (dnscrypt.valid) {
+        const std::vector<uint8_t> encrypted = Dns::QueryDNSCrypt(
+            query, dnscrypt.address, dnscrypt.providerName, dnscrypt.publicKey, 10000);
+        CHECK(IsSuccessfulLiveDnsAnswer(encrypted));
+    }
+
+    TestLiveDnsProxy(query);
+}
+
 }  // namespace
 
 int main() {
@@ -601,6 +886,12 @@ int main() {
     TestGlobMatching();
     TestJson();
     TestRepairBudget();
+    TestIpEndpointParsing();
+    TestDnsStamps();
+    TestBundledDnsProxyConfig();
+    TestHttpResponseParser();
+    TestTcpSessionFraming();
+    TestLiveDnsTransports();
 
     if (g_failures) {
         std::printf("%d check(s) failed\n", g_failures);

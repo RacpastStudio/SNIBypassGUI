@@ -38,13 +38,19 @@
 #include "app/logging.h"
 #include "app/text.h"
 #include "dns/message.h"
+#include "dns/socket_utils.h"
+#include "dns/tcp_session.h"
 
 namespace Dns {
 namespace {
 
-// A message is length-prefixed with 16 bits on TCP, so this is the largest one
-// that can exist on either transport.
-constexpr size_t kMaxMessage = 65535;
+using SocketUtils::CloseSocket;
+using SocketUtils::EnsureWinsock;
+using SocketUtils::kMaxMessage;
+using SocketUtils::kTickMs;
+using SocketUtils::Now;
+using SocketUtils::SameHost;
+using SocketUtils::SetNonBlocking;
 
 // How many client connections are served at once, and how long one may sit idle.
 // TCP here is the rare fallback after a truncated reply, not the normal path.
@@ -65,69 +71,30 @@ constexpr size_t kUpstreamsQueried = 2;
 // VPN or renewing a lease replaces the machine's resolvers underneath us.
 constexpr uint64_t kUpstreamRefreshMs = 10000;
 
-// How often the loop wakes when nothing is happening, which is also the longest a
-// Stop() waits and the resolution of every deadline above.
-constexpr long kTickMs = 100;
-
 // Every socket the loop can watch has to fit in one fd_set: two listeners, two
 // upstream sockets, and a client plus an upstream connection per TCP session.
 static_assert(kMaxTcpSessions * 2 + 4 <= FD_SETSIZE,
               "select() cannot watch that many sockets at once");
 
-uint64_t Now() {
-    return GetTickCount64();
+// Bind the resolver's UDP listener. The shared binder takes the address
+// explicitly, so the loopback endpoint this server owns stays a property of this
+// file rather than of the plumbing both servers share.
+SOCKET BindUdpListener() {
+    return SocketUtils::BindListener(kResolverAddress, kResolverPort, SOCK_DGRAM, IPPROTO_UDP);
 }
 
-// Winsock, started once for the process and never stopped.
-//
-// WSACleanup belongs to a program that is finished with sockets, and this one is
-// finished with them only when it exits — at which point the kernel does the same
-// work. Tying it to a static destructor instead would run it in an order no
-// translation unit here controls, while a detached worker may still hold a socket.
-bool EnsureWinsock() {
-    static const bool ready = [] {
-        WSADATA data;
-        return WSAStartup(MAKEWORD(2, 2), &data) == 0;
-    }();
-    return ready;
-}
-
-void SetNonBlocking(SOCKET s) {
-    u_long mode = 1;
-    ioctlsocket(s, FIONBIO, &mode);
-}
-
-// Stop Windows from failing a later recvfrom with WSAECONNRESET because an earlier
-// datagram drew an ICMP port-unreachable. On a socket that talks to several
-// servers at once, one dead server would otherwise poison reads for all of them.
-void DisableUdpConnReset(SOCKET s) {
-    BOOL off = FALSE;
-    DWORD returned = 0;
-    WSAIoctl(s, SIO_UDP_CONNRESET, &off, sizeof(off), nullptr, 0, &returned, nullptr, nullptr);
-}
-
-// Bind one listener on the resolver endpoint. SO_EXCLUSIVEADDRUSE is what stops
-// another program from later binding the same address with SO_REUSEADDR and
-// quietly taking delivery of the queries meant for us.
-SOCKET BindListener(int type, int protocol) {
-    SOCKET s = socket(AF_INET, type, protocol);
+// Bind and listen on the resolver's TCP listener.
+SOCKET BindTcpListener() {
+    const SOCKET s =
+        SocketUtils::BindListener(kResolverAddress, kResolverPort, SOCK_STREAM, IPPROTO_TCP);
     if (s == INVALID_SOCKET) return INVALID_SOCKET;
-
-    BOOL exclusive = TRUE;
-    setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char*>(&exclusive),
-               sizeof(exclusive));
-
-    sockaddr_in addr = {};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(kResolverPort);
-    if (InetPtonW(AF_INET, kResolverAddress, &addr.sin_addr) != 1 ||
-        bind(s, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
+    if (listen(s, SOMAXCONN) == SOCKET_ERROR) {
         const int err = WSAGetLastError();
-        closesocket(s);
+        SOCKET failed = s;
+        CloseSocket(failed);
         WSASetLastError(err);
         return INVALID_SOCKET;
     }
-    SetNonBlocking(s);
     return s;
 }
 
@@ -135,7 +102,7 @@ SOCKET BindListener(int type, int protocol) {
 SOCKET MakeUpstreamSocket(int family) {
     SOCKET s = socket(family, SOCK_DGRAM, IPPROTO_UDP);
     if (s == INVALID_SOCKET) return INVALID_SOCKET;
-    DisableUdpConnReset(s);
+    SocketUtils::DisableUdpConnReset(s);
     SetNonBlocking(s);
     return s;
 }
@@ -146,24 +113,6 @@ struct Upstream {
     sockaddr_storage addr = {};
     int len = 0;
 };
-
-// Compare two addresses by family and address bytes, ignoring the port: the port
-// is ours to set, and the same server must not be queried twice because two
-// adapters list it.
-bool SameHost(const sockaddr_storage& a, const sockaddr_storage& b) {
-    if (a.ss_family != b.ss_family) return false;
-    if (a.ss_family == AF_INET) {
-        return std::memcmp(&reinterpret_cast<const sockaddr_in&>(a).sin_addr,
-                           &reinterpret_cast<const sockaddr_in&>(b).sin_addr,
-                           sizeof(in_addr)) == 0;
-    }
-    if (a.ss_family == AF_INET6) {
-        return std::memcmp(&reinterpret_cast<const sockaddr_in6&>(a).sin6_addr,
-                           &reinterpret_cast<const sockaddr_in6&>(b).sin6_addr,
-                           sizeof(in6_addr)) == 0;
-    }
-    return false;
-}
 
 // True if `sa` is a server worth sending a query to.
 bool UsableUpstream(const sockaddr* sa) {
@@ -261,32 +210,30 @@ struct PendingUdp {
 
 // One TCP client connection, and the upstream connection opened for it if the
 // query it carried has to be forwarded. Exactly one query is served at a time; a
-// second one that arrives early simply waits in `in` until the first is answered.
+// second one that arrives early waits in the reader until the first is answered.
+//
+// Both directions are reassembled by the shared reader rather than by a buffer
+// this file grows and indexes itself: DNS-over-TCP framing is the same problem on
+// the client side and the upstream side, and it is the same problem the forwarder
+// has, so it is solved once.
 struct TcpSession {
     SOCKET client = INVALID_SOCKET;
     SOCKET upstream = INVALID_SOCKET;
     bool connecting = false;  // the upstream connect has not completed
     bool busy = false;        // a query is being served and owes a response
 
-    std::vector<uint8_t> in;   // bytes read from the client
+    TcpSessionReader in;       // queries arriving from the client
     std::vector<uint8_t> out;  // length-prefixed response owed to the client
     size_t outSent = 0;
 
     std::vector<uint8_t> upOut;  // length-prefixed query owed to the upstream
     size_t upSent = 0;
-    std::vector<uint8_t> upIn;  // reply arriving from the upstream
+    TcpSessionReader upIn;  // reply arriving from the upstream
 
     std::vector<uint8_t> question;  // header + question, to answer with on failure
     Query query;
     uint64_t deadline = 0;
 };
-
-void CloseSocket(SOCKET& s) {
-    if (s != INVALID_SOCKET) {
-        closesocket(s);
-        s = INVALID_SOCKET;
-    }
-}
 
 }  // namespace
 
@@ -501,7 +448,7 @@ void CloseUpstream(TcpSession& t) {
     t.connecting = false;
     t.upOut.clear();
     t.upSent = 0;
-    t.upIn.clear();
+    t.upIn.Clear();
 }
 
 // Give up on a forward and tell the client the lookup failed, which is the one
@@ -540,34 +487,35 @@ void StartTcpForward(ResolverState& s, TcpSession& t) {
     t.deadline = Now() + kForwardTimeoutMs;
 }
 
-// Serve the next complete query sitting in the client's buffer, if there is one
+// Serve the next complete query sitting in the client's reader, if there is one
 // and nothing else is in flight. Returns false when the connection is unusable.
 bool ServeBufferedQuery(ResolverState& s, TcpSession& t, const RuleSet& rules) {
-    if (t.busy || t.in.size() < 2) return true;
-    const size_t len = static_cast<size_t>((t.in[0] << 8) | t.in[1]);
-    if (len == 0) return false;              // a framing this broken has no recovery
-    if (t.in.size() < len + 2) return true;  // still arriving
+    if (t.busy || !t.in.HasMessage()) return true;
+
+    // Taken out of the reader before it is parsed: a message the reader accepted
+    // is a whole one, so the framing has already been settled and this cannot
+    // desynchronise the stream even if the DNS inside it is nonsense.
+    const std::vector<uint8_t> message = t.in.TakeMessage();
 
     Query q;
-    if (!ParseQuery(t.in.data() + 2, len, q)) return false;
+    if (!ParseQuery(message.data(), message.size(), q)) return false;
 
     t.busy = true;
-    std::vector<uint8_t> response = TryAnswer(rules, t.in.data() + 2, len, q);
+    std::vector<uint8_t> response = TryAnswer(rules, message.data(), message.size(), q);
     if (!response.empty()) {
         QueueResponse(t, response);
-        t.in.erase(t.in.begin(), t.in.begin() + static_cast<ptrdiff_t>(len) + 2);
         return true;
     }
 
     // Forwarded whole, length prefix included, and under the client's own
     // transaction id: one query owns this connection, so there is nothing to
-    // demultiplex and no reason to rewrite it.
-    t.question.assign(t.in.begin() + 2,
-                      t.in.begin() + 2 + static_cast<ptrdiff_t>(q.questionEnd));
+    // demultiplex and no reason to rewrite it. The prefix is re-applied because
+    // the reader hands back the payload it framed.
+    t.question.assign(message.begin(), message.begin() + q.questionEnd);
     t.query = q;
-    t.upOut.assign(t.in.begin(), t.in.begin() + static_cast<ptrdiff_t>(len) + 2);
+    t.upOut = EncodeTcpMessage(message);
+    if (t.upOut.empty()) return false;
     t.upSent = 0;
-    t.in.erase(t.in.begin(), t.in.begin() + static_cast<ptrdiff_t>(len) + 2);
     StartTcpForward(s, t);
     return true;
 }
@@ -577,9 +525,14 @@ bool ReadFromClient(ResolverState& s, TcpSession& t, const RuleSet& rules) {
     const int received = recv(t.client, buffer, sizeof(buffer), 0);
     if (received == 0) return false;  // the client closed its half
     if (received < 0) return WSAGetLastError() == WSAEWOULDBLOCK;
-    if (t.in.size() + static_cast<size_t>(received) > kMaxMessage + 2) return false;
 
-    t.in.insert(t.in.end(), buffer, buffer + received);
+    // The reader enforces its own bound and reports a stream it cannot recover
+    // from, which for a client connection means the same thing a bad frame does:
+    // the connection is closed.
+    if (t.in.Append(reinterpret_cast<const uint8_t*>(buffer), static_cast<size_t>(received)) ==
+        TcpSessionReader::State::Broken) {
+        return false;
+    }
     if (!t.busy) t.deadline = Now() + kTcpIdleTimeoutMs;
     return ServeBufferedQuery(s, t, rules);
 }
@@ -637,19 +590,21 @@ void ReadFromUpstream(TcpSession& t) {
         FailTcpForward(t);
         return;
     }
-    if (t.upIn.size() + static_cast<size_t>(received) > kMaxMessage + 2) {
+    if (t.upIn.Append(reinterpret_cast<const uint8_t*>(buffer),
+                      static_cast<size_t>(received)) == TcpSessionReader::State::Broken) {
         FailTcpForward(t);
         return;
     }
-    t.upIn.insert(t.upIn.end(), buffer, buffer + received);
-
-    if (t.upIn.size() < 2) return;
-    const size_t len = static_cast<size_t>((t.upIn[0] << 8) | t.upIn[1]);
-    if (t.upIn.size() < len + 2) return;
+    if (!t.upIn.HasMessage()) return;
 
     // Relayed exactly as it came, truncation flag and all: the client asked over
     // TCP, so a reply that does not fit is the upstream's problem to have avoided.
-    t.out.assign(t.upIn.begin(), t.upIn.begin() + static_cast<ptrdiff_t>(len) + 2);
+    // The reader strips the prefix; putting it back is what the client expects.
+    t.out = EncodeTcpMessage(t.upIn.TakeMessage());
+    if (t.out.empty()) {
+        FailTcpForward(t);
+        return;
+    }
     t.outSent = 0;
     CloseUpstream(t);
     t.deadline = Now() + kTcpIdleTimeoutMs;
@@ -765,17 +720,18 @@ bool LocalResolver::Start() {
     // goes out of scope and its destructor closes whatever was already opened.
     auto state = std::make_unique<ResolverState>();
 
-    state->udp = BindListener(SOCK_DGRAM, IPPROTO_UDP);
+    state->udp = BindUdpListener();
     if (state->udp == INVALID_SOCKET) {
         LOGE(std::wstring(L"Resolver: cannot bind UDP ") + kResolverAddress + L":" +
              std::to_wstring(kResolverPort) + L" (err " + std::to_wstring(WSAGetLastError()) +
              L").");
         return false;
     }
-    DisableUdpConnReset(state->udp);
 
-    state->tcp = BindListener(SOCK_STREAM, IPPROTO_TCP);
-    if (state->tcp == INVALID_SOCKET || listen(state->tcp, SOMAXCONN) == SOCKET_ERROR) {
+    // The shared binder already turned off ICMP-port-unreachable poisoning, which
+    // is what a forwarder sharing one socket across several upstreams needs.
+    state->tcp = BindTcpListener();
+    if (state->tcp == INVALID_SOCKET) {
         LOGE(std::wstring(L"Resolver: cannot listen on TCP ") + kResolverAddress + L":" +
              std::to_wstring(kResolverPort) + L" (err " + std::to_wstring(WSAGetLastError()) +
              L").");

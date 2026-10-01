@@ -39,6 +39,7 @@
 #include "app/paths.h"
 #include "app/text.h"
 #include "app/version.h"
+#include "dns/dns_proxy.h"
 #include "dns/nrpt.h"
 #include "dns/redirector.h"
 #include "platform/autostart.h"
@@ -51,15 +52,15 @@ namespace Services {
 
 namespace {
 
-// The three things that have to be up for this program to do anything.
+// The four things that have to be up for this program to do anything.
 //
 // Named as one type because the stack does not distinguish between them: any one of
-// them going down takes the other two with it, and for the same reason in each case
+// them going down takes the others with it, and for the same reason in each case
 // — what is left is not a reduced service, it is a machine whose DNS points at
-// something that cannot answer. The two children happen to be processes and DNS
-// redirection happens to be a thread and a registry key, but that is an
-// implementation detail of each, not a difference in how the stack treats them.
-enum class Component { Nginx, SniGate, DnsRedirection };
+// something that cannot answer. The children happen to be processes and the DNS
+// components happen to be threads and a registry key, but that is an implementation
+// detail of each, not a difference in how the stack treats them.
+enum class Component { Nginx, SniGate, DnsRedirection, DnsProxy };
 
 // For the log: stable, ASCII, and the name the thing calls itself.
 const wchar_t* ComponentLogName(Component c) {
@@ -67,6 +68,7 @@ const wchar_t* ComponentLogName(Component c) {
         case Component::Nginx: return L"nginx";
         case Component::SniGate: return L"sni-gate";
         case Component::DnsRedirection: return L"DNS redirection";
+        case Component::DnsProxy: return L"DNS proxy";
     }
     return L"";
 }
@@ -79,6 +81,7 @@ const wchar_t* ComponentNameKey(Component c) {
         case Component::Nginx: return L"status.nginx";
         case Component::SniGate: return L"status.route";
         case Component::DnsRedirection: return L"status.dns";
+        case Component::DnsProxy: return L"status.proxy";
     }
     return L"";
 }
@@ -93,8 +96,8 @@ const wchar_t* ComponentNameKey(Component c) {
 // so every redirected name resolves to a loopback address with nothing behind it.
 // Every supported site breaks at once and the program does not say a word.
 //
-// The wait is on kernel objects — the children's process handles, and one event that
-// DNS redirection signals when it has stopped in a way it could not repair — so a
+// The wait is on kernel objects — the children's process handles and events the DNS
+// components signal when they stop in a way they could not repair — so a
 // component going down is observed the instant it happens, thirty milliseconds in or
 // thirty minutes in, indistinguishably, and costs nothing at all until it does. That
 // is the point: any interval here would be a guess about how long a service is
@@ -320,11 +323,14 @@ struct Runtime::State {
     // everything else to the machine's real resolvers.
     Dns::Redirector redirector;
 
+    // DNS forwarder: forwards queries to DoH/DoT/DNSCrypt upstreams with racing.
+    Dns::DnsProxy proxy;
+
     // Watches every component for going down without this program asking.
     //
     // Declared last deliberately: members are destroyed in reverse order, so this one
     // is torn down — its wait cancelled and confirmed ended — while the children and
-    // the redirector whose handles it is waiting on are still alive. Reversed, the
+    // DNS components whose handles it is waiting on are still alive. Reversed, the
     // wait would outlive the handles it waits on for as long as the disarm takes.
     //
     // Armed and disarmed only under operationMutex, or from this state's own
@@ -467,7 +473,7 @@ bool ChildRunning(const std::shared_ptr<Runtime::State>& state,
 // answering with its health would walk past exactly the state that most needs
 // clearing up.
 bool AnythingRunning(Runtime::State& state) {
-    if (state.redirector.Active()) return true;
+    if (state.redirector.Active() || state.proxy.Running()) return true;
     std::lock_guard<std::mutex> lock(state.childMutex);
     return static_cast<bool>(state.nginx) || static_cast<bool>(state.sniGate);
 }
@@ -547,6 +553,7 @@ void StopLocked(Runtime::State& state) {
     // drops the loopback answers we synthesized, so names resolve for real again
     // straight away instead of after their TTL runs out.
     state.redirector.Stop();
+    state.proxy.Stop();
     FlushResolverCache();
 
     StopChildren(state);
@@ -581,6 +588,7 @@ void ReportStartFailure(bool interactive, Component component, const wchar_t* re
 // machine's networking, while a policy rule that keeps being deleted is another
 // program on the machine, and no amount of restarting this one will help.
 const wchar_t* ReasonKeyFor(Runtime::State& state, Component component) {
+    if (component == Component::DnsProxy) return L"reason.dnsProxyStopped";
     if (component != Component::DnsRedirection) return L"reason.exitedWhileRunning";
     return state.redirector.failure() == Dns::RedirectFailure::RuleUnholdable
                ? L"reason.dnsRuleRemoved"
@@ -665,7 +673,8 @@ void ArmSupervisor(Runtime::State& state) {
     state.supervisor.Arm(
         {{Component::Nginx, state.nginx.waitHandle()},
          {Component::SniGate, state.sniGate.waitHandle()},
-         {Component::DnsRedirection, state.redirector.failureHandle()}},
+         {Component::DnsRedirection, state.redirector.failureHandle()},
+         {Component::DnsProxy, state.proxy.stoppedHandle()}},
         [generation](Component component) { OnComponentDown(component, generation); });
 }
 
@@ -721,11 +730,12 @@ bool StartLocked(Runtime::State& state, bool interactive) {
     // still up — is not left to the port-conflict path either. This stack is
     // all-or-nothing by design, so the remnant is cleared and the start proceeds from
     // a known state rather than from whatever happened to survive.
-    if (state.redirector.Running() && state.nginx.Running() && state.sniGate.Running()) {
+    if (state.redirector.Running() && state.proxy.Running() && state.nginx.Running() &&
+        state.sniGate.Running()) {
         LOGI(L"Start requested while everything is already running; nothing to do.");
         return true;
     }
-    if (state.redirector.Active() || state.nginx || state.sniGate) {
+    if (state.redirector.Active() || state.proxy.Running() || state.nginx || state.sniGate) {
         LOGW(L"Start requested with part of the stack still up; stopping the remnant first.");
         StopLocked(state);
     }
@@ -762,9 +772,20 @@ bool StartLocked(Runtime::State& state, bool interactive) {
         }
     }
 
-    // From here on the start is all-or-nothing. A stack with nginx up but the DNS
-    // redirection down proxies nothing, yet holds the ports and reads as partly running;
-    // rolling back leaves the machine exactly as it was found.
+    // From here on the start is all-or-nothing. Nginx resolves dynamic upstreams
+    // through this proxy, so it must be listening before nginx reads its config.
+    const std::wstring proxyConfig = ResolvedPath(L"DnsProxyConfig", L"data\\dns_proxy.ini");
+    if (!state.proxy.LoadConfig(proxyConfig) || !state.proxy.Start()) {
+        LOGE(L"Failed to start DNS proxy from " + proxyConfig + L".");
+        StopLocked(state);
+        if (interactive)
+            MessageBoxW(nullptr, T(L"msg.dnsProxyStartFail"), APP_NAME, MB_ICONERROR);
+        return false;
+    }
+    LOGI(L"DNS proxy started.");
+
+    // A stack with a child up but DNS redirection down proxies nothing, yet holds
+    // the ports and reads as partly running; rolling back restores the known state.
     if (!StartChild(state, &Runtime::State::nginx, Component::Nginx, NginxExe())) {
         StopLocked(state);
         ReportStartFailure(interactive, Component::Nginx, L"reason.launchFailed");
@@ -967,6 +988,11 @@ bool DnsRedirectRunning() {
     return state && state->redirector.Running();
 }
 
+bool DnsProxyRunning() {
+    const std::shared_ptr<Runtime::State> state = Ctx();
+    return state && state->proxy.Running();
+}
+
 bool NginxRunning() {
     return ChildRunning(Ctx(), &Runtime::State::nginx, NginxExe());
 }
@@ -976,7 +1002,7 @@ bool SniGateRunning() {
 }
 
 bool AnyRunning() {
-    return DnsRedirectRunning() || NginxRunning() || SniGateRunning();
+    return DnsRedirectRunning() || DnsProxyRunning() || NginxRunning() || SniGateRunning();
 }
 
 // ---- Ports -------------------------------------------------------------------

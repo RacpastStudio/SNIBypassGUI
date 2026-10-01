@@ -56,6 +56,7 @@ const std::map<std::wstring, Pair>& Table() {
         {L"version.display",  {L"V5.1.2", L"V5.1.2"}},
 
         {L"status.dns",       {L"DNS Redirection", L"DNS 重定向"}},
+        {L"status.proxy",     {L"DNS Proxy", L"DNS 代理"}},
         {L"status.nginx",     {L"Nginx", L"Nginx"}},
         {L"status.route",     {L"Route Service", L"路由服务"}},
         {L"status.running",   {L"Running", L"运行中"}},
@@ -158,11 +159,19 @@ const std::map<std::wstring, Pair>& Table() {
                                L"security software, network or registry optimization tools, or Group Policy.",
                                L"DNS 策略规则多次恢复后均被再次删除，无法重定向任何域名。"
                                L"可能是安全软件、网络或注册表优化工具或组策略正在持续删除该规则。"}},
+        {L"reason.dnsProxyStopped", {L"The encrypted DNS proxy has stopped responding. This may be caused by "
+                               L"a local network stack failure or interference from security software.",
+                               L"加密 DNS 代理已停止响应。可能是本机网络组件故障或被安全软件拦截。"}},
         {L"msg.dnsStartFail", {L"Could not start DNS redirection.\n"
                                L"Another program may already be using 127.11.45.14:53, or the "
                                L"DNS Client service may be disabled.",
                                L"无法启动 DNS 重定向。\n"
                                L"可能是 127.11.45.14:53 已被其他程序占用，或 DNS Client 服务被禁用。"}},
+        {L"msg.dnsProxyStartFail", {L"Could not start the encrypted DNS proxy.\n"
+                               L"Its configuration may be missing or invalid, or another program may "
+                               L"already be using 127.191.98.10:53.",
+                               L"无法启动加密 DNS 代理。\n"
+                               L"可能是配置缺失或无效，或 127.191.98.10:53 已被其他程序占用。"}},
         {L"msg.dnsClientOff", {L"Windows' \"DNS Client\" service is not running. Without this "
                                L"service, SNIBypassGUI cannot redirect any domain and none of "
                                L"the supported sites will take effect, so the program has not "

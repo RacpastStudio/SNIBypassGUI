@@ -59,6 +59,56 @@ set(CMAKE_C_STANDARD 11)
 
 option(SNIB_BUILD_TESTS "Build the unit test suite" OFF)
 
+# libsodium publishes Autotools sources rather than a CMake project. Build the
+# pinned release as an ExternalProject so the application never trusts or ships
+# a repository-vendored binary archive.
+include(ExternalProject)
+set(SNIB_MSYS2_ROOT "C:/msys64" CACHE PATH "MSYS2 installation used to build libsodium")
+find_program(SNIB_BASH_EXECUTABLE
+    NAMES bash
+    PATHS "${SNIB_MSYS2_ROOT}/usr/bin"
+    NO_DEFAULT_PATH
+    REQUIRED)
+
+set(SNIB_SODIUM_VERSION "1.0.22")
+set(SNIB_SODIUM_SOURCE_SHA256
+    "adbdd8f16149e81ac6078a03aca6fc03b592b89ef7b5ed83841c086191be3349")
+set(SNIB_SODIUM_PREFIX "${CMAKE_BINARY_DIR}/_deps/libsodium")
+set(SNIB_SODIUM_INSTALL_DIR "${SNIB_SODIUM_PREFIX}/install")
+set(SNIB_SODIUM_INCLUDE_DIR "${SNIB_SODIUM_INSTALL_DIR}/include")
+set(SNIB_SODIUM_LIBRARY "${SNIB_SODIUM_INSTALL_DIR}/lib/libsodium.a")
+
+# Imported-target include directories must exist at configure time, before the
+# external project has downloaded anything.
+file(MAKE_DIRECTORY "${SNIB_SODIUM_INCLUDE_DIR}")
+
+if(SNIB_BUILD_TESTS)
+    set(SNIB_SODIUM_RUN_TESTS 1)
+else()
+    set(SNIB_SODIUM_RUN_TESTS 0)
+endif()
+
+ExternalProject_Add(snib_libsodium_build
+    URL "https://download.libsodium.org/libsodium/releases/libsodium-${SNIB_SODIUM_VERSION}.tar.gz"
+    URL_HASH "SHA256=${SNIB_SODIUM_SOURCE_SHA256}"
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    PREFIX "${SNIB_SODIUM_PREFIX}"
+    CONFIGURE_COMMAND ""
+    BUILD_COMMAND
+        "${SNIB_BASH_EXECUTABLE}"
+        "${CMAKE_SOURCE_DIR}/third_party/libsodium/build-mingw64.sh"
+        "<SOURCE_DIR>"
+        "${SNIB_SODIUM_INSTALL_DIR}"
+        "${SNIB_SODIUM_RUN_TESTS}"
+    INSTALL_COMMAND ""
+    BUILD_BYPRODUCTS "${SNIB_SODIUM_LIBRARY}")
+
+add_library(snib_sodium STATIC IMPORTED GLOBAL)
+set_target_properties(snib_sodium PROPERTIES
+    IMPORTED_LOCATION "${SNIB_SODIUM_LIBRARY}"
+    INTERFACE_INCLUDE_DIRECTORIES "${SNIB_SODIUM_INCLUDE_DIR}")
+add_dependencies(snib_sodium snib_libsodium_build)
+
 # What clangd and clang-tidy read to learn each translation unit's flags. Without
 # it an editor falls back to guessing them, and every Windows header resolves to
 # nothing — the diagnostics that follow are about the guess, not the code.
@@ -78,9 +128,10 @@ add_compile_definitions(
     UNICODE
     _UNICODE
     WIN32_LEAN_AND_MEAN
-    _WIN32_WINNT=0x0601)
+    _WIN32_WINNT=0x0601
+    SODIUM_STATIC)
 
-set(SNIB_WARNING_FLAGS -Wall -Wextra)
+set(SNIB_WARNING_FLAGS -Wall -Wextra -Werror)
 
 set(SNIB_CHARSET_FLAGS
     -finput-charset=UTF-8 -fexec-charset=UTF-8 -fwide-exec-charset=UTF-16LE)
@@ -121,12 +172,25 @@ add_library(snib_core OBJECT
     src/app/settings.cpp
     src/app/text.cpp
     src/app/version.cpp
+    src/compat/memset_explicit.c
+    src/dns/cancel.cpp
+    src/dns/dns_proxy.cpp
+    src/dns/dns_proxy_config.cpp
+    src/dns/dnscrypt_client.cpp
+    src/dns/dnsstamp.cpp
+    src/dns/doh_client.cpp
+    src/dns/dot_client.cpp
     src/dns/file_watcher.cpp
+    src/dns/http_response.cpp
     src/dns/message.cpp
+    src/dns/network_utils.cpp
     src/dns/nrpt.cpp
     src/dns/redirector.cpp
     src/dns/resolver.cpp
     src/dns/rules.cpp
+    src/dns/socket_utils.cpp
+    src/dns/tcp_session.cpp
+    src/dns/tls_utils.cpp
     src/platform/autostart.cpp
     src/platform/command.cpp
     src/platform/elevation.cpp
@@ -142,7 +206,9 @@ add_library(snib_core OBJECT
 
 target_include_directories(snib_core PUBLIC
     "${CMAKE_SOURCE_DIR}/src"
+    "${SNIB_SODIUM_INCLUDE_DIR}"
     "${SNIB_GENERATED_DIR}")
+add_dependencies(snib_core snib_libsodium_build)
 
 target_compile_options(snib_core PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:-O2>
@@ -208,7 +274,8 @@ add_custom_command(TARGET SNIBypassGUI POST_BUILD
 # so a non-ASCII install path never has to survive a console code page.
 target_link_libraries(SNIBypassGUI PRIVATE
     iphlpapi ws2_32 wininet bcrypt crypt32 shell32 ole32 oleaut32 taskschd advapi32 user32
-    gdi32 comctl32)
+    gdi32 comctl32 secur32
+    snib_sodium)
 
 # ---------------------------------------------------------------------------
 # Tests (opt-in).
@@ -225,6 +292,8 @@ install(TARGETS SNIBypassGUI RUNTIME DESTINATION .)
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/resources/payload/"
         DESTINATION .
         USE_SOURCE_PERMISSIONS)
+install(FILES "${CMAKE_SOURCE_DIR}/third_party/libsodium/LICENSE"
+        DESTINATION "licenses/libsodium")
 
 add_custom_target(dist
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/dist"

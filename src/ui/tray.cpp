@@ -50,6 +50,7 @@ constexpr wchar_t kWindowClass[] = L"SNIBypassGUI_TrayWnd";
 
 enum MenuId : UINT {
     kIdStatusDns = 2000,
+    kIdStatusProxy,
     kIdStatusNginx,
     kIdStatusRoute,
     kIdVersion,
@@ -201,6 +202,7 @@ HMENU BuildAboutMenu() {
 
 void ShowContextMenu() {
     const bool dns = Services::DnsRedirectRunning();
+    const bool proxy = Services::DnsProxyRunning();
     const bool nginx = Services::NginxRunning();
     const bool sniGate = Services::SniGateRunning();
     // An update or cleanup in flight owns the service state, so disable the items that would
@@ -212,6 +214,8 @@ void ShowContextMenu() {
     HMENU menu = CreatePopupMenu();
     AppendMenuW(menu, MF_STRING | MF_GRAYED, kIdStatusDns,
                 StatusLabel(L"status.dns", dns).c_str());
+    AppendMenuW(menu, MF_STRING | MF_GRAYED, kIdStatusProxy,
+                StatusLabel(L"status.proxy", proxy).c_str());
     AppendMenuW(menu, MF_STRING | MF_GRAYED, kIdStatusNginx,
                 StatusLabel(L"status.nginx", nginx).c_str());
     AppendMenuW(menu, MF_STRING | MF_GRAYED, kIdStatusRoute,
@@ -221,7 +225,7 @@ void ShowContextMenu() {
     // Offer only one of Start/Stop: if anything is running, only "Stop" — which
     // prevents clicking "Start" when the ports are already held by our own services.
     const UINT startStopFlags = MF_STRING | (busy ? MF_GRAYED : 0);
-    if (dns || nginx || sniGate)
+    if (dns || proxy || nginx || sniGate)
         AppendMenuW(menu, startStopFlags, kIdStop, T(L"menu.stop"));
     else
         AppendMenuW(menu, startStopFlags, kIdStart, T(L"menu.start"));
