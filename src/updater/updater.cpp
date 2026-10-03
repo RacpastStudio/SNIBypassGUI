@@ -18,6 +18,7 @@
 #include "updater/updater.h"
 
 #include <windows.h>
+
 #include <shellapi.h>
 
 #include <string>
@@ -97,7 +98,8 @@ bool Relaunch(const std::wstring& exe, const Plan& plan) {
     mutableCommand.push_back(L'\0');
 
     const size_t slash = exe.find_last_of(L'\\');
-    const std::wstring dir = (slash == std::wstring::npos) ? std::wstring() : exe.substr(0, slash);
+    const std::wstring dir =
+        (slash == std::wstring::npos) ? std::wstring() : exe.substr(0, slash);
 
     STARTUPINFOW si = {};
     si.cb = sizeof(si);
@@ -106,8 +108,8 @@ bool Relaunch(const std::wstring& exe, const Plan& plan) {
 
     PROCESS_INFORMATION pi = {};
     const BOOL started =
-        CreateProcessW(exe.c_str(), mutableCommand.data(), nullptr, nullptr, FALSE, 0,
-                       nullptr, dir.empty() ? nullptr : dir.c_str(), &si, &pi);
+        CreateProcessW(exe.c_str(), mutableCommand.data(), nullptr, nullptr, FALSE, 0, nullptr,
+                       dir.empty() ? nullptr : dir.c_str(), &si, &pi);
     if (!started) return false;
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);

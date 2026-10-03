@@ -129,9 +129,8 @@ bool Launch(const std::vector<std::wstring>& args) {
         }
         if (file != INVALID_HANDLE_VALUE) {
             DWORD written = 0;
-            const bool wrote = WriteFile(file, image.data(),
-                                         static_cast<DWORD>(image.size()), &written,
-                                         nullptr) &&
+            const bool wrote = WriteFile(file, image.data(), static_cast<DWORD>(image.size()),
+                                         &written, nullptr) &&
                                written == image.size();
             if (wrote) FlushFileBuffers(file);
             CloseHandle(file);
@@ -159,9 +158,9 @@ bool Launch(const std::vector<std::wstring>& args) {
     // lifetime to ours would defeat it. Its working directory is the module directory,
     // never the install tree, so nothing it starts inherits a handle into the folder it
     // is about to delete or replace.
-    const BOOL started = CreateProcessW(modulePath.c_str(), mutableCommand.data(), nullptr,
-                                        nullptr, FALSE, CREATE_NO_WINDOW, nullptr, dir.c_str(),
-                                        &si, &pi);
+    const BOOL started =
+        CreateProcessW(modulePath.c_str(), mutableCommand.data(), nullptr, nullptr, FALSE,
+                       CREATE_NO_WINDOW, nullptr, dir.c_str(), &si, &pi);
     if (!started) {
         LOGE(L"Updater: cannot start the module " + modulePath + L" (err " +
              std::to_wstring(GetLastError()) + L").");

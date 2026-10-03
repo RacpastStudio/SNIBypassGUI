@@ -53,8 +53,8 @@ constexpr wchar_t kPlanDirName[] = L"SNIBypassGUI";
 
 std::string ToUtf8(const std::wstring& w) {
     if (w.empty()) return {};
-    const int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()),
-                                      nullptr, 0, nullptr, nullptr);
+    const int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr,
+                                      0, nullptr, nullptr);
     if (n <= 0) return {};
     std::string out(static_cast<size_t>(n), '\0');
     WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), out.data(), n,
@@ -78,8 +78,8 @@ std::wstring FromUtf8(const std::string& s) {
 // anything.
 bool BuildPlanSecurityAttributes(SECURITY_ATTRIBUTES& sa) {
     PSECURITY_DESCRIPTOR descriptor = nullptr;
-    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            kPlanDirSddl, SDDL_REVISION_1, &descriptor, nullptr))
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(kPlanDirSddl, SDDL_REVISION_1,
+                                                              &descriptor, nullptr))
         return false;
 
     sa = {};

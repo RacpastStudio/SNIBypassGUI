@@ -53,11 +53,11 @@ enum class Op {
 // translation units, and renaming a field here must not silently change it.
 struct Plan {
     Op op = Op::Replace;
-    std::wstring target;  // the executable to replace (Replace) or delete (Remove)
-    std::wstring newFile;  // staged replacement; Replace only
-    std::wstring backup;   // where the previous executable is kept; Replace only
-    std::wstring dir;      // install directory, for the empty-rmdir step; Remove only
-    DWORD parentPid = 0;   // the process that will exit and release `target`
+    std::wstring target;     // the executable to replace (Replace) or delete (Remove)
+    std::wstring newFile;    // staged replacement; Replace only
+    std::wstring backup;     // where the previous executable is kept; Replace only
+    std::wstring dir;        // install directory, for the empty-rmdir step; Remove only
+    DWORD parentPid = 0;     // the process that will exit and release `target`
     bool autostart = false;  // relaunch with the logon flag
 };
 
