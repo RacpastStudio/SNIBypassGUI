@@ -148,4 +148,10 @@ std::vector<uint8_t> BuildStatusResponse(const uint8_t* query, size_t qlen, cons
     return ResponseSkeleton(query, qlen, q, rcode);
 }
 
+bool IsTruncated(const uint8_t* dns, size_t len) {
+    if (!dns || len < 12) return false;
+    const uint16_t flags = static_cast<uint16_t>((dns[2] << 8) | dns[3]);
+    return (flags & 0x0200) != 0;  // TC bit is bit 9 (0x0200)
+}
+
 }  // namespace Dns

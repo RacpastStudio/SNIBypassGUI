@@ -53,19 +53,6 @@ std::wstring DecodeConsoleOutput(const std::string& bytes) {
     return wide;
 }
 
-// The user's temp directory, with a trailing backslash.
-//
-// Resolved through the wide API: the ANSI environment would mis-decode a non-ASCII
-// profile path, and the scripts written here carry install paths that have to
-// survive verbatim.
-std::wstring TempDir() {
-    wchar_t buf[MAX_PATH + 1] = {};
-    const DWORD n = GetTempPathW(MAX_PATH + 1, buf);
-    std::wstring dir = (n > 0 && n <= MAX_PATH) ? std::wstring(buf) : L"C:\\Windows\\Temp\\";
-    if (!dir.empty() && dir.back() != L'\\') dir.push_back(L'\\');
-    return dir;
-}
-
 }  // namespace
 
 int RunHidden(const std::wstring& cmdline, std::wstring* out, DWORD timeoutMs) {
@@ -137,40 +124,6 @@ int RunHidden(const std::wstring& cmdline, std::wstring* out, DWORD timeoutMs) {
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     return (waitResult == WAIT_TIMEOUT) ? -2 : static_cast<int>(code);
-}
-
-bool RunDetachedScript(const std::wstring& scriptName, const std::wstring& body) {
-    std::wstring script;
-    script += L"@echo off\r\n";
-    script += L"chcp 65001 >nul\r\n";
-    script += body;
-
-    const std::wstring dir = TempDir();
-    const std::wstring scriptPath = dir + scriptName;
-
-    HANDLE file = CreateFileW(scriptPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                              FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file == INVALID_HANDLE_VALUE) {
-        LOGE(L"Cannot write the helper script " + scriptPath + L" (err " +
-             std::to_wstring(GetLastError()) + L").");
-        return false;
-    }
-    const std::string utf8 = WideToUtf8(script);
-    DWORD written = 0;
-    const bool wrote =
-        WriteFile(file, utf8.data(), static_cast<DWORD>(utf8.size()), &written, nullptr) &&
-        written == utf8.size();
-    CloseHandle(file);
-    if (!wrote) {
-        LOGE(L"Incomplete write of the helper script " + scriptPath + L".");
-        return false;
-    }
-
-    // No job object: this helper exists to act after we are gone, so tying its
-    // lifetime to ours would defeat it. It runs from the temp directory, so neither
-    // it nor anything it starts holds a folder inside the install tree open.
-    return static_cast<bool>(Process::LaunchDetached(L"C:\\Windows\\System32\\cmd.exe",
-                                                     L"/c \"" + scriptPath + L"\"", dir, true));
 }
 
 }  // namespace Command

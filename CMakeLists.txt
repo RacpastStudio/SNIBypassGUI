@@ -59,6 +59,51 @@ set(CMAKE_C_STANDARD 11)
 
 option(SNIB_BUILD_TESTS "Build the unit test suite" OFF)
 
+# ---------------------------------------------------------------------------
+# libsodium — official MinGW prebuilt distribution.
+#
+# Downloaded, never vendored: the archive is not committed, because a binary in the
+# repository would hide which build it came from, record no ABI, and could not be
+# reviewed. Upstream publishes a MinGW tarball alongside its Autotools sources, so
+# the pinned URL plus SHA-256 below is the whole dependency — no compiler run, and
+# therefore no Autotools, no `make`, and no MSYS2.
+#
+# The previous flow built libsodium from source through build-mingw64.sh, which
+# needed cygpath and GNU make. That made an MSYS2 installation a hard requirement at
+# a point where nothing else in this build wants one, and it failed on any machine
+# without it long before anything could be compiled.
+#
+# Reproducibility note: the tarball name carries "-stable", and libsodium has been
+# known to re-upload a name like that in place. The SHA-256 is what actually pins
+# the bytes; if upstream ever reissues the file, this hash stops matching and the
+# download fails loudly rather than silently pulling a different library. To move
+# to a new release, change both the version and the hash together.
+# ---------------------------------------------------------------------------
+set(SNIB_SODIUM_VERSION "1.0.22")
+set(SNIB_SODIUM_MINGW_SHA256
+    "2dbb9fdb0882ec44a328b1f6a8fccbfa0bb0d0f5b1034f135e15827acaf6dba7")
+
+include(FetchContent)
+FetchContent_Declare(libsodium_mingw
+    URL "https://download.libsodium.org/libsodium/releases/libsodium-${SNIB_SODIUM_VERSION}-stable-mingw.tar.gz"
+    URL_HASH "SHA256=${SNIB_SODIUM_MINGW_SHA256}"
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+FetchContent_MakeAvailable(libsodium_mingw)
+
+# The tarball is a multi-architecture drop: it carries win32 and win64 side by side.
+# This project only ever targets x86_64, so only that half is referenced.
+set(SNIB_SODIUM_DIST_DIR "${libsodium_mingw_SOURCE_DIR}/libsodium-win64")
+set(SNIB_SODIUM_INCLUDE_DIR "${SNIB_SODIUM_DIST_DIR}/include")
+
+add_library(snib_sodium STATIC IMPORTED GLOBAL)
+set_target_properties(snib_sodium PROPERTIES
+    IMPORTED_LOCATION "${SNIB_SODIUM_DIST_DIR}/lib/libsodium.a"
+    INTERFACE_INCLUDE_DIRECTORIES "${SNIB_SODIUM_INCLUDE_DIR}")
+
+# Both directories exist as soon as population has run, so unlike an ExternalProject
+# there is nothing to pre-create for the imported target's include path, and no
+# add_dependencies() to wire up — MakeAvailable is complete before this point.
+
 # What clangd and clang-tidy read to learn each translation unit's flags. Without
 # it an editor falls back to guessing them, and every Windows header resolves to
 # nothing — the diagnostics that follow are about the guess, not the code.
@@ -78,9 +123,10 @@ add_compile_definitions(
     UNICODE
     _UNICODE
     WIN32_LEAN_AND_MEAN
-    _WIN32_WINNT=0x0601)
+    _WIN32_WINNT=0x0601
+    SODIUM_STATIC)
 
-set(SNIB_WARNING_FLAGS -Wall -Wextra)
+set(SNIB_WARNING_FLAGS -Wall -Wextra -Werror)
 
 set(SNIB_CHARSET_FLAGS
     -finput-charset=UTF-8 -fexec-charset=UTF-8 -fwide-exec-charset=UTF-16LE)
@@ -105,8 +151,137 @@ configure_file("${CMAKE_SOURCE_DIR}/src/app.rc.in" "${SNIB_APP_RC}" @ONLY)
 configure_file("${CMAKE_SOURCE_DIR}/src/app.manifest.in"
                "${SNIB_GENERATED_DIR}/app.manifest" @ONLY)
 
+# The updater's version is its own — see src/updater/version.h for why — so it is read
+# from that header and split into the four components a FILEVERSION needs, exactly as
+# APP_VERSION_NUM is above.
+file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/src/updater/version.h" _upd_ver_line
+     REGEX "^[ \t]*#define[ \t]+UPDATER_VERSION_NUM[ \t]+L\"")
+if(NOT _upd_ver_line)
+    message(FATAL_ERROR "UPDATER_VERSION_NUM not found in src/updater/version.h")
+endif()
+string(REGEX REPLACE ".*L\"([^\"]*)\".*" "\\1" SNIB_UPDATER_VERSION "${_upd_ver_line}")
+string(REPLACE "." ";" _upd_parts "${SNIB_UPDATER_VERSION}")
+list(LENGTH _upd_parts _upd_len)
+foreach(_i RANGE 3)
+    if(_i LESS _upd_len)
+        list(GET _upd_parts ${_i} _part)
+        string(REGEX REPLACE "[^0-9]" "" _part "${_part}")
+        if(_part STREQUAL "")
+            set(_part 0)
+        endif()
+    else()
+        set(_part 0)
+    endif()
+    list(GET _ver_names ${_i} _name)
+    set(UPDATER_VER_${_name} ${_part})
+endforeach()
+set(UPDATER_VER_NUMERIC "${UPDATER_VER_A}.${UPDATER_VER_B}.${UPDATER_VER_C}.${UPDATER_VER_D}")
+message(STATUS "SNIBypassGUI updater version: ${SNIB_UPDATER_VERSION} (numeric ${UPDATER_VER_NUMERIC})")
+
+configure_file("${CMAKE_SOURCE_DIR}/src/updater/updater.rc.in"
+               "${SNIB_GENERATED_DIR}/updater.rc" @ONLY)
+
 enable_language(RC)
 set(CMAKE_RC_FLAGS "${CMAKE_RC_FLAGS} -I${SNIB_GENERATED_DIR} -I${CMAKE_SOURCE_DIR}/resources/branding -I${CMAKE_SOURCE_DIR}/src -I${CMAKE_SOURCE_DIR}/resources/embedded")
+
+# Suppress GCC's automatic default-manifest.o so the one from our .rc is the only one.
+# Both executables need this, so it is generated once, here, before either target.
+include("${CMAKE_SOURCE_DIR}/cmake/NoDefaultManifest.cmake")
+snib_generate_no_default_manifest_spec(SNIB_NO_DEFAULT_MANIFEST_SPEC)
+
+# ---------------------------------------------------------------------------
+# Updater protocol library.
+#
+# The updater (see below) is a separate executable, so it is a separate binary,
+# and the work order it consumes is a format both sides have to agree on exactly.
+# That format is the only thing they share, so it is the only thing in this library
+# — deliberately not part of snib_core, which would pull the payload, the
+# configuration and libsodium into a program whose entire job is to move two files
+# while the main executable cannot be running.
+# ---------------------------------------------------------------------------
+add_library(snib_updater_protocol OBJECT
+    src/updater/plan.cpp)
+
+target_include_directories(snib_updater_protocol PUBLIC "${CMAKE_SOURCE_DIR}/src")
+target_compile_options(snib_updater_protocol PRIVATE
+    $<$<COMPILE_LANGUAGE:CXX>:-O2>
+    -municode
+    ${SNIB_WARNING_FLAGS}
+    ${SNIB_CHARSET_FLAGS}
+    ${SNIB_PRIVACY_FLAGS})
+
+# ---------------------------------------------------------------------------
+# Updater module: embedded, never distributed.
+#
+# Built as an ordinary executable so it can be run and tested on its own, then
+# embedded into the application as an RCDATA resource and written out only at the
+# moment it is needed. It is NOT installed and NOT listed in the update manifest.
+#
+# That is the point. A second .exe sitting beside the application in a green/portable
+# zip is a loose file the user can see, the uninstaller has to know about, and the
+# update channel has to carry. Embedding it removes all three: the zip stays one
+# executable plus payload, the manifest has nothing new to describe, and the module
+# travels inside the file that already carries the version it belongs to.
+#
+# It is also what makes the uninstall correct. The updater deletes the install tree it
+# was started from, so it cannot live in that tree; running it from %ProgramData%
+# instead means nothing pins the program directory and the non-recursive rmdir behind
+# it can actually succeed.
+#
+# Kept as small as it can be: no payload, no configuration, no services, no libsodium,
+# and no manifest (see src/updater/updater.rc.in for why it needs none). That is what
+# lets it work while the main executable is being replaced or removed — precisely when
+# it runs.
+# ---------------------------------------------------------------------------
+add_executable(Updater WIN32
+    src/updater/main.cpp
+    src/updater/updater.cpp
+    $<TARGET_OBJECTS:snib_updater_protocol>
+    "${SNIB_GENERATED_DIR}/updater.rc")
+
+target_include_directories(Updater PRIVATE
+    "${CMAKE_SOURCE_DIR}/src"
+    "${SNIB_GENERATED_DIR}")
+
+target_compile_options(Updater PRIVATE
+    $<$<COMPILE_LANGUAGE:CXX>:-O2>
+    -municode
+    ${SNIB_WARNING_FLAGS}
+    ${SNIB_CHARSET_FLAGS}
+    ${SNIB_PRIVACY_FLAGS})
+
+target_link_options(Updater PRIVATE
+    -municode -mwindows
+    -static -static-libgcc -static-libstdc++
+    -s
+    "-specs=${SNIB_NO_DEFAULT_MANIFEST_SPEC}"
+    -Wl,--gc-sections)
+
+# bcrypt: BCryptGenRandom, for the plan file name. advapi32:
+# ConvertStringSecurityDescriptorToSecurityDescriptorW and SetNamedSecurityInfoW, for
+# the plan directory's DACL. shell32: CommandLineToArgvW. There is no separate sddl
+# library — the SDDL and security-descriptor APIs both live in advapi32.
+target_link_libraries(Updater PRIVATE bcrypt advapi32 shell32 user32)
+
+# The generated fragment that embeds the built module. app.rc includes this, and it is
+# generated rather than written by hand because it names an absolute build-tree path —
+# the one thing that cannot be known ahead of time.
+file(GENERATE
+    OUTPUT "${SNIB_GENERATED_DIR}/updater_embedded.rc"
+    CONTENT "// GENERATED -- do not edit. See CMakeLists.txt.\n\
+// The updater module, embedded as a resource.\n\
+//\n\
+// APP_RCDATA_UPDATER is the resource id, kept next to the EULA ids in\n\
+// src/platform/embedded_text.h. It is compiled in unconditionally: a build is not a\n\
+// variant of the application, and a missing module would be a broken install rather\n\
+// than a supported configuration.\n\
+APP_RCDATA_UPDATER RCDATA \"$<TARGET_FILE:Updater>\"\n")
+
+# The app.rc object embeds the module, so it must be compiled after the module has been
+# linked. A target-level dependency does that correctly, where a file-level one would
+# have to name the module file directly and would not bring its own build along.
+set_source_files_properties("${SNIB_APP_RC}" PROPERTIES OBJECT_DEPENDS
+                            "${SNIB_GENERATED_DIR}/updater_embedded.rc")
 
 # ---------------------------------------------------------------------------
 # Shared object library: every translation unit except the entry point.
@@ -121,12 +296,25 @@ add_library(snib_core OBJECT
     src/app/settings.cpp
     src/app/text.cpp
     src/app/version.cpp
+    src/compat/memset_explicit.c
+    src/dns/cancel.cpp
+    src/dns/dns_proxy.cpp
+    src/dns/dns_proxy_config.cpp
+    src/dns/dnscrypt_client.cpp
+    src/dns/dnsstamp.cpp
+    src/dns/doh_client.cpp
+    src/dns/dot_client.cpp
     src/dns/file_watcher.cpp
+    src/dns/http_response.cpp
     src/dns/message.cpp
+    src/dns/network_utils.cpp
     src/dns/nrpt.cpp
     src/dns/redirector.cpp
     src/dns/resolver.cpp
     src/dns/rules.cpp
+    src/dns/socket_utils.cpp
+    src/dns/tcp_session.cpp
+    src/dns/tls_utils.cpp
     src/platform/autostart.cpp
     src/platform/command.cpp
     src/platform/elevation.cpp
@@ -138,10 +326,12 @@ add_library(snib_core OBJECT
     src/update/client.cpp
     src/update/crypto.cpp
     src/update/http.cpp
-    src/update/json.cpp)
+    src/update/json.cpp
+    src/updater/module.cpp)
 
 target_include_directories(snib_core PUBLIC
     "${CMAKE_SOURCE_DIR}/src"
+    "${SNIB_SODIUM_INCLUDE_DIR}"
     "${SNIB_GENERATED_DIR}")
 
 target_compile_options(snib_core PRIVATE
@@ -174,7 +364,13 @@ add_executable(SNIBypassGUI WIN32
     src/main.cpp
     $<TARGET_OBJECTS:snib_core>
     $<TARGET_OBJECTS:snib_ui>
+    # The app writes the updater's work order, so it needs the same protocol it does.
+    $<TARGET_OBJECTS:snib_updater_protocol>
     "${SNIB_APP_RC}")
+
+# The application embeds the updater module as a resource, so the module has to exist
+# before the resource script is compiled.
+add_dependencies(SNIBypassGUI Updater)
 
 target_include_directories(SNIBypassGUI PRIVATE
     "${CMAKE_SOURCE_DIR}/src"
@@ -188,9 +384,7 @@ target_compile_options(SNIBypassGUI PRIVATE
     ${SNIB_PRIVACY_FLAGS})
 
 # Suppress GCC's automatic default-manifest.o so ours (from app.rc) is the only one.
-include("${CMAKE_SOURCE_DIR}/cmake/NoDefaultManifest.cmake")
-snib_generate_no_default_manifest_spec(SNIB_NO_DEFAULT_MANIFEST_SPEC)
-
+# SNIB_NO_DEFAULT_MANIFEST_SPEC is generated once, above, next to enable_language(RC).
 target_link_options(SNIBypassGUI PRIVATE
     -municode -mwindows
     -static -static-libgcc -static-libstdc++
@@ -208,7 +402,8 @@ add_custom_command(TARGET SNIBypassGUI POST_BUILD
 # so a non-ASCII install path never has to survive a console code page.
 target_link_libraries(SNIBypassGUI PRIVATE
     iphlpapi ws2_32 wininet bcrypt crypt32 shell32 ole32 oleaut32 taskschd advapi32 user32
-    gdi32 comctl32)
+    gdi32 comctl32 secur32
+    snib_sodium)
 
 # ---------------------------------------------------------------------------
 # Tests (opt-in).
@@ -221,10 +416,17 @@ endif()
 # ---------------------------------------------------------------------------
 # Install + dist.
 # ---------------------------------------------------------------------------
+# ONLY the application is installed. The updater module is embedded inside it, so it is
+# deliberately absent here: a second executable in the archive root is a file the user
+# sees, the uninstaller has to track, and the update channel has to carry. It is also
+# what would stop the uninstaller from removing the program directory at all, since a
+# module that lives in the tree being deleted cannot be the thing that deletes it.
 install(TARGETS SNIBypassGUI RUNTIME DESTINATION .)
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/resources/payload/"
         DESTINATION .
         USE_SOURCE_PERMISSIONS)
+install(FILES "${CMAKE_SOURCE_DIR}/third_party/libsodium/LICENSE"
+        DESTINATION "licenses/libsodium")
 
 add_custom_target(dist
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/dist"

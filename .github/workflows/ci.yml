@@ -60,6 +60,15 @@ jobs:
           $bin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
           & (Join-Path $bin 'gcc.exe') --version
 
+      # CMake and Ninja ship with the windows-latest image, and nothing in this
+      # build needs MSYS2 any more: libsodium is downloaded as a prebuilt MinGW
+      # archive by FetchContent, so there is no configure/make step to run. The
+      # previous MSYS2 setup existed only to provide those two tools.
+      - name: Verify CMake and Ninja
+        run: |
+          cmake --version
+          ninja --version
+
       # ---- CI: Format gate (runs before the build, so a style failure is
       #      reported on its own rather than buried under compiler output) ----
       - name: Check formatting and line endings

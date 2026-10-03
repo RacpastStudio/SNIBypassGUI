@@ -19,6 +19,8 @@
 
 #include <windows.h>
 
+#include <shellapi.h>
+
 #include <fstream>
 #include <map>
 #include <set>
@@ -36,6 +38,8 @@
 #include "update/crypto.h"
 #include "update/http.h"
 #include "update/json.h"
+#include "updater/module.h"
+#include "updater/plan.h"
 
 namespace Update {
 namespace {
@@ -231,48 +235,76 @@ DownloadResult DownloadPhase(const Info& info, std::vector<Staged>& staged,
     return DownloadResult::Ok;
 }
 
-// The commands of the wait-and-relaunch helper that replaces the running executable
-// after we exit. Crash-safe: the current executable is preserved as .bak first, and
-// if the swap fails the backup is restored, so the install is never left without a
-// working executable.
+// Whether this process was started as a logon launch, read from our own command line.
 //
-// `args` is what this process was started with, and it is handed back to the copy
-// that replaces us because the relaunch continues this session rather than beginning
-// a new one. A logon start carries -autostart, which is what tells the program to
-// bring the service stack up and to leave the desktop shortcut alone; dropping it
-// would bring the tray back with nothing running and a shortcut prompt in front of
-// someone who only agreed to an update.
-std::wstring BuildSelfUpdateScript(const std::wstring& self, const std::wstring& newExe,
-                                   const std::wstring& bak, const std::wstring& args) {
-    std::wstring s;
-    s += L"set \"SELF=" + self + L"\"\r\n";
-    s += L"set \"NEW=" + newExe + L"\"\r\n";
-    s += L"set \"BAK=" + bak + L"\"\r\n";
-    s += L"set \"ARGS=" + args + L"\"\r\n";
-    s += L"del \"%BAK%\" >nul 2>&1\r\n";
-    s += L"set /a TRIES=0\r\n";
-    s += L":wait\r\n";
-    s += L"ping 127.0.0.1 -n 2 >nul\r\n";
-    // Retry until the old process has exited and released the image.
-    s += L"move /Y \"%SELF%\" \"%BAK%\" >nul 2>&1\r\n";
-    s += L"if not exist \"%SELF%\" goto swap\r\n";
-    s += L"set /a TRIES+=1\r\n";
-    s += L"if %TRIES% LSS 60 goto wait\r\n";
-    // Never took the lock: leave the install exactly as it was.
-    s += L"del \"%NEW%\" >nul 2>&1\r\n";
-    s += L"start \"\" \"%SELF%\" %ARGS%\r\n";
-    s += L"goto done\r\n";
-    s += L":swap\r\n";
-    s += L"move /Y \"%NEW%\" \"%SELF%\" >nul 2>&1\r\n";
-    s += L"if exist \"%SELF%\" (\r\n";
-    s += L"  del \"%BAK%\" >nul 2>&1\r\n";
-    s += L") else (\r\n";
-    s += L"  move /Y \"%BAK%\" \"%SELF%\" >nul 2>&1\r\n";
-    s += L")\r\n";
-    s += L"start \"\" \"%SELF%\" %ARGS%\r\n";
-    s += L":done\r\n";
-    s += L"(goto) 2>nul & del \"%~f0\"\r\n";
-    return s;
+// The relaunch continues this session rather than beginning a new one, and a logon
+// start carries -autostart, which is what tells the program to bring the service stack
+// up and to leave the desktop shortcut alone; dropping it would bring the tray back
+// with nothing running and a shortcut prompt in front of someone who only agreed to an
+// update.
+//
+// Tokenized and compared exactly. A substring search would turn this on for a path or a
+// quoted argument that merely contains the flag.
+bool IsAutostartLaunch() {
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!argv) return false;
+
+    bool autostart = false;
+    for (int i = 1; i < argc && !autostart; ++i) {
+        const std::wstring arg = argv[i];
+        autostart = (arg == L"-autostart" || arg == L"/autostart");
+    }
+    LocalFree(argv);
+    return autostart;
+}
+
+// Hand the executable swap to the updater.
+//
+// Nothing here is a shell command. The paths, the parent pid and the autostart bit go
+// into a work order (updater/plan.h) created fresh under %ProgramData%, and the updater
+// module is launched with one fixed flag and that file's path. The previous
+// implementation built a batch script instead, which meant every one of these strings
+// was re-parsed as command language — and by an elevated cmd.exe. A path is a path here,
+// whatever characters it contains.
+//
+// `self` is where the running executable lives, `newExe` the verified replacement
+// already staged beside it, and `bak` where the current one is preserved until the swap
+// is confirmed.
+bool StartUpdater(const std::wstring& self, const std::wstring& newExe, const std::wstring& bak,
+                  bool autostart) {
+    const std::wstring dir = Updater::PlanDirectory();
+    if (dir.empty()) {
+        LOGE(
+            L"Update: the updater's plan directory could not be secured; refusing to "
+            L"schedule the swap.");
+        return false;
+    }
+
+    Updater::Plan plan;
+    plan.op = Updater::Op::Replace;
+    plan.target = self;
+    plan.newFile = newExe;
+    plan.backup = bak;
+    plan.parentPid = GetCurrentProcessId();
+    plan.autostart = autostart;
+
+    const std::wstring planPath = dir + L"\\" + Updater::RandomPlanFileName();
+    if (!Updater::WritePlan(planPath, plan)) {
+        LOGE(L"Update: cannot write the updater plan " + planPath + L" (err " +
+             std::to_wstring(GetLastError()) + L").");
+        return false;
+    }
+
+    // Arguments are a list, never a pre-joined line: the quoting the process API needs
+    // is applied in one place, so nothing here can produce an ambiguous command line by
+    // concatenation.
+    if (!UpdaterModule::Launch({L"--apply-plan", planPath})) {
+        LOGE(L"Update: cannot start the updater module.");
+        Updater::DeletePlanFile(planPath);
+        return false;
+    }
+    return true;
 }
 
 void ReportFailure(const std::wstring& message) {
@@ -632,18 +664,15 @@ bool PerformUpdate(const Info& info, const Progress& progress) {
         return false;
     }
 
-    // ---- Phase 3: swap the running executable via a wait-and-relaunch helper. ----
-    LOGI(L"Update: launching the self-update helper and exiting.");
-    if (!Command::RunDetachedScript(
-            L"selfupdate.bat",
-            BuildSelfUpdateScript(exeEntry->target, exeEntry->tmp, exeEntry->bak,
-                                  Process::OwnCommandLineArgs()))) {
-        LOGE(L"Update: cannot start the self-update helper.");
+    // ---- Phase 3: swap the running executable through the updater. ----
+    LOGI(L"Update: handing the executable swap to the updater and exiting.");
+    if (!StartUpdater(exeEntry->target, exeEntry->tmp, exeEntry->bak, IsAutostartLaunch())) {
+        LOGE(L"Update: cannot start the updater.");
         DeleteFileW(exeEntry->tmp.c_str());
         ReportFailure(T(L"msg.updApplyFail"));
         return false;
     }
-    return true;  // the caller must exit so the helper can replace us
+    return true;  // the caller must exit so the updater can replace us
 }
 
 }  // namespace Update

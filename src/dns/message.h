@@ -46,6 +46,10 @@ struct Query {
     size_t questionEnd = 0;  // offset just past QNAME+QTYPE+QCLASS
 };
 
+// Check if a DNS response has the TC (truncated) flag set, meaning it was too
+// large for UDP and should be retried over TCP.
+bool IsTruncated(const uint8_t* dns, size_t len);
+
 // Parse the header and first question of a DNS message. Bounds checked; returns
 // false on a malformed, compressed, or empty question.
 bool ParseQuery(const uint8_t* dns, size_t len, Query& out);
