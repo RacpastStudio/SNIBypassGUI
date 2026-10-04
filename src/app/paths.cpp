@@ -79,3 +79,9 @@ std::wstring PathUnder(const std::wstring& rel) {
         if (c == L'/') c = L'\\';
     return ExeDir() + native;
 }
+
+std::wstring DirPart(const std::wstring& path) {
+    const size_t slash = path.find_last_of(L"\\/");
+    if (slash == std::wstring::npos) return L"";
+    return path.substr(0, slash + 1);
+}

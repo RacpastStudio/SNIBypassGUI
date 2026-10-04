@@ -27,6 +27,8 @@
 #include "app/settings.h"
 #include "app/text.h"
 #include "app/version.h"
+#include "platform/command.h"
+#include "platform/dialogs.h"
 #include "platform/elevation.h"
 #include "platform/process.h"
 #include "ui/eula.h"
@@ -39,18 +41,30 @@ namespace {
 // releases the mutex, which happens as that process is torn down.
 constexpr DWORD kInstanceLockTimeoutMs = 5000;
 
-bool HasFlag(const std::wstring& cmdline, const std::wstring& flag) {
-    return LowerW(cmdline).find(LowerW(flag)) != std::wstring::npos;
-}
-
-// Keep THIS process and terminate every other copy, regardless of where it runs
-// from. KillTree does not return until each one is actually gone, so by the time
-// this returns the lock below is genuinely free to take.
+// Keep THIS process and terminate every other copy running in THIS SESSION. The
+// single-instance rule is per interactive session, not per machine: see the note on
+// APP_MUTEX_NAME for why the mutex still spans sessions and this filter is what keeps
+// one user's launch from terminating another user's.
+//
+// KillTree does not return until each one is actually gone, so by the time this
+// returns the lock below is genuinely free to take.
 void EnforceSingleInstance() {
     const DWORD self = GetCurrentProcessId();
+    DWORD selfSession = 0;
+    if (!ProcessIdToSessionId(self, &selfSession)) {
+        // Cannot establish our own session, so cannot tell which copies are ours to
+        // stop. Terminating none is the only safe answer: every candidate is another
+        // user's until proven otherwise.
+        LOGW(L"Could not determine this process's session; not terminating any other copy.");
+        return;
+    }
+
     for (DWORD pid : Process::FindByName(L"SNIBypassGUI.exe")) {
         if (pid == self) continue;
-        LOGW(L"Terminating another SNIBypassGUI instance, pid " + std::to_wstring(pid));
+        DWORD session = 0;
+        if (!ProcessIdToSessionId(pid, &session) || session != selfSession) continue;
+        LOGW(L"Terminating another SNIBypassGUI instance in this session, pid " +
+             std::to_wstring(pid));
         Process::KillTree(pid);
     }
 }
@@ -95,9 +109,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR lpCmdLine, int) {
          L") starting (args: " + cmdline + L") ===");
 
     // 1. Require administrator, elevating if necessary.
+    //
+    // Both dialogs before the tray exists run through Dialogs::Show like every other
+    // one. There is no window yet, so it takes the ownerless inline path — which is
+    // correct here, not a fallback: this is the main thread, and it is the only thread
+    // in the process at this point.
     if (!IsRunningAsAdmin()) {
-        if (!RelaunchElevated(cmdline))
-            MessageBoxW(nullptr, T(L"msg.needAdmin"), APP_NAME, MB_ICONERROR);
+        if (!RelaunchElevated(cmdline)) Dialogs::Show(T(L"msg.needAdmin"), MB_ICONERROR);
         return 0;
     }
 
@@ -107,7 +125,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR lpCmdLine, int) {
     //    handled after the agreement, through the signed download path.
     if (!Bootstrap::PayloadPresent() && Bootstrap::RunningFromArchiveTemp()) {
         LOGE(L"Running from an archive temp dir without payload; refusing to continue.");
-        MessageBoxW(nullptr, T(L"msg.extractFirst"), APP_NAME, MB_ICONERROR | MB_OK);
+        Dialogs::Show(T(L"msg.extractFirst"), MB_ICONERROR | MB_OK);
         return 0;
     }
 
@@ -129,8 +147,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR lpCmdLine, int) {
     // 5. Only our own child binaries may be running.
     Services::EnforceCleanSlate();
 
-    const bool autostartMode =
-        HasFlag(cmdline, L"-autostart") || HasFlag(cmdline, L"/autostart");
+    // Read from the process's own command line rather than from `cmdline` above,
+    // which is lpCmdLine and therefore has the program name already removed. The
+    // helper tokenizes the full form and knows that; see its declaration for why
+    // handing it the stripped string finds nothing.
+    const bool autostartMode = Command::IsAutostartLaunch();
 
     // 6. Every launch needs an accepted agreement before the tray appears. Declining
     //    exits without starting anything.

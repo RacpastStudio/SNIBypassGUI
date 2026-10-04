@@ -51,12 +51,31 @@ struct Info {
     bool ok = false;
     std::wstring error;  // populated when ok == false
     std::wstring version;
-    std::wstring released;
     std::wstring notes;  // release notes for the current language
     uint64_t chunkSize = 0;
     bool reinstallRequired = false;  // we predate min_upgradable_from
     std::vector<File> files;
 };
+
+// What the manifest's version means relative to the running executable.
+//
+// This exists so the ordering question — "is the channel ahead of us, behind us, or
+// the same as us?" — is answered in exactly one place. It used to be recomputed
+// independently in the per-file update decision (client.cpp) and again in the tray's
+// message selection, two evaluations of the same pair of operands with nothing
+// keeping them in agreement.
+//
+// The distinction is not cosmetic. The executable-update decision is INEQUALITY, not
+// "greater than": a force-aligned channel must be able to move clients DOWN as well
+// as up, so Downgrade means "update, in that direction", not "refuse".
+enum class UpdateKind {
+    None,       // the channel serves the same version we run
+    Upgrade,    // the channel is ahead of us
+    Downgrade,  // the channel is behind us (a force-aligned rollback)
+};
+
+// Classify the manifest version against the running executable's version.
+UpdateKind Classify(const Info& info);
 
 // Fetch manifest.json and manifest.json.sig, verify the signature over the exact
 // manifest bytes, then parse. Info.ok is false on any network, parse, signature or

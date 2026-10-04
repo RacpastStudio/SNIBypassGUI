@@ -306,9 +306,17 @@ void DeleteTree(const std::wstring& dir) {
     RemoveDirectoryW(dir.c_str());
 }
 
-void Delete(const std::wstring& path) {
+// Whether `path` is gone. INVALID_FILE_ATTRIBUTES covers both "does not exist" and
+// "could not be queried"; the two are treated alike because a caller asking whether
+// its deletion worked has the same answer either way — it cannot show that it did.
+bool IsGone(const std::wstring& path) {
+    return GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES;
+}
+
+bool Delete(const std::wstring& path) {
     const DWORD attr = GetFileAttributesW(path.c_str());
-    if (attr == INVALID_FILE_ATTRIBUTES) return;
+    // Nothing there is the state the caller asked for.
+    if (attr == INVALID_FILE_ATTRIBUTES) return true;
 
     if (attr & FILE_ATTRIBUTE_READONLY) SetFileAttributesW(path.c_str(), FILE_ATTRIBUTE_NORMAL);
 
@@ -322,6 +330,14 @@ void Delete(const std::wstring& path) {
     } else {
         DeleteFileW(path.c_str());
     }
+
+    // Confirmed rather than assumed. A deletion can fail without any call reporting
+    // it — a file another process holds open, a directory whose child went away
+    // between the walk and the remove — and the caller counts what this says.
+    if (IsGone(path)) return true;
+    LOGW(L"FileSystem: could not delete " + path + L" (err " + std::to_wstring(GetLastError()) +
+         L").");
+    return false;
 }
 
 std::vector<std::wstring> Enumerate(const std::wstring& baseDir, const std::wstring& pattern) {
@@ -370,9 +386,12 @@ size_t DeleteByPattern(const std::wstring& baseDir, const std::wstring& pattern,
     size_t deleted = 0;
     for (const Match& m : matches) {
         if (filter && !filter(m.rel, m.isDir)) continue;
-        Delete(m.full);
-        ++deleted;
-        LOGI(L"FileSystem: deleted " + m.rel);
+        // Counted only when the item is actually gone: this number reaches the user
+        // as "N items deleted", so a locked file must not be added to it.
+        if (Delete(m.full)) {
+            ++deleted;
+            LOGI(L"FileSystem: deleted " + m.rel);
+        }
     }
 
     return deleted;
@@ -424,9 +443,12 @@ size_t DeleteByPatterns(const std::wstring& baseDir, const std::vector<std::wstr
     size_t deleted = 0;
     for (const Match& m : matches) {
         if (filter && !filter(m.rel, m.isDir)) continue;
-        Delete(m.full);
-        ++deleted;
-        LOGI(L"FileSystem: deleted " + m.rel);
+        // As above: counted only when gone, so the number the user is shown is a fact
+        // about the machine rather than a count of what was attempted.
+        if (Delete(m.full)) {
+            ++deleted;
+            LOGI(L"FileSystem: deleted " + m.rel);
+        }
     }
 
     return deleted;

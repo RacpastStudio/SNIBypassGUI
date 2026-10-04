@@ -272,25 +272,6 @@ Handle LaunchDetached(const std::wstring& exePath, const std::wstring& args,
     return std::move(started.process);
 }
 
-std::wstring OwnCommandLineArgs() {
-    const wchar_t* line = GetCommandLineW();
-    if (!line) return {};
-
-    // argv[0] is either quoted in full or runs to the first whitespace. Skipping
-    // exactly that much is what leaves the arguments as the shell wrote them,
-    // quoting intact, rather than a re-quoted approximation of them.
-    const wchar_t* p = line;
-    if (*p == L'"') {
-        ++p;
-        while (*p && *p != L'"') ++p;
-        if (*p == L'"') ++p;
-    } else {
-        while (*p && *p != L' ' && *p != L'\t') ++p;
-    }
-    while (*p == L' ' || *p == L'\t') ++p;
-    return p;
-}
-
 bool TryImagePath(DWORD pid, std::wstring& out) {
     out.clear();
     if (pid == 0) return false;

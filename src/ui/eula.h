@@ -18,7 +18,15 @@
 #pragma once
 #include <windows.h>
 
+#include <string>
+
 namespace Eula {
+
+// SHA-256 (lowercase hex) of the embedded agreement documents, in a fixed order.
+// This is the identity of the agreement text, and the value stored in config.ini
+// when the user accepts; it deliberately does not depend on the current language.
+// Empty if the documents could not be read.
+std::string AcceptedTextHash();
 
 // If the agreement has not been accepted, show it modally in the current language.
 // Returns true if the user agreed (and the acceptance has been persisted), false if

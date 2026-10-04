@@ -21,6 +21,12 @@
 // Text baked into the executable's own resources. Used for content that must be
 // readable before any file or network access exists — currently the user
 // agreement, which gates the first launch.
+//
+// Documents only, and deliberately so. A resource does not have to be text, but
+// reading one as text involves a decision — the byte-order mark is stripped, because
+// every document that reaches this function may carry one. That decision is wrong for
+// anything that is not text, which is why the updater module reads its own resource
+// itself (updater/module.cpp) rather than borrowing this one.
 namespace EmbeddedText {
 
 // Resource ids of the embedded documents (see app.rc).

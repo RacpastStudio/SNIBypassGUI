@@ -25,7 +25,9 @@
 #include "app/settings.h"
 #include "app/text.h"
 #include "app/version.h"
+#include "platform/dialogs.h"
 #include "platform/embedded_text.h"
+#include "update/crypto.h"
 
 // The dialog is built from an in-memory DLGTEMPLATE rather than an .rc resource, so
 // the OS still handles font, tab order, Esc and DPI scaling (dialog units scale with
@@ -163,7 +165,7 @@ std::wstring LoadText() {
 bool RunDialog(HINSTANCE instance, bool gated) {
     const std::wstring text = LoadText();
     if (text.empty()) {
-        MessageBoxW(nullptr, T(L"eula.loadFail"), APP_NAME, MB_ICONERROR);
+        Dialogs::Show(T(L"eula.loadFail"), MB_ICONERROR);
         return false;
     }
     const std::vector<BYTE> tmpl = BuildTemplate(gated);
@@ -174,10 +176,50 @@ bool RunDialog(HINSTANCE instance, bool gated) {
 
 }  // namespace
 
+// Identifies the agreement BY ITS CONTENT.
+//
+// Several properties are deliberate here and each one has a failure mode it avoids:
+//
+//   * It hashes the DOCUMENT, not one rendering of it. The dialog text is CRLF-
+//     converted and localized; hashing that would make a language switch look like a
+//     changed agreement and re-prompt a user who agreed to the same document.
+//   * It hashes BOTH embedded documents, in a fixed order, rather than the one for
+//     the current language. Same reason: which language this process happens to be
+//     in must not change what "the agreement" is.
+//   * It covers the bytes as embedded, so any edit to the resource — including one
+//     nobody would notice — changes the identity and renews consent.
+//
+// The bytes hashed are exactly what LoadText() shows (EmbeddedText::Read strips the
+// BOM in both paths), so a stored acceptance always describes the text that was on
+// screen when the user clicked Accept.
+std::string AcceptedTextHash() {
+    Crypto::Sha256 hash;
+    if (!hash.valid()) return {};
+
+    const int documents[] = {EmbeddedText::kEulaEnglish, EmbeddedText::kEulaChinese};
+    for (int id : documents) {
+        const std::string doc = EmbeddedText::Read(id);
+        if (doc.empty()) return {};  // an unreadable document means nothing to accept
+        // Length-prefixed so two documents can never concatenate into a third
+        // document's byte string.
+        const uint64_t n = doc.size();
+        hash.Add(&n, sizeof(n));
+        hash.Add(doc.data(), doc.size());
+    }
+    return WideToUtf8(hash.Hex());
+}
+
 bool EnsureAccepted(HINSTANCE instance) {
-    if (EulaAccepted()) return true;
+    const std::string hash = AcceptedTextHash();
+    if (hash.empty()) {
+        // The document could not be read, so there is nothing to accept. Fail closed:
+        // no agreement, no program.
+        Dialogs::Show(T(L"eula.loadFail"), MB_ICONERROR);
+        return false;
+    }
+    if (EulaAccepted(hash)) return true;
     const bool agreed = RunDialog(instance, true);
-    if (agreed) SetEulaAccepted(true);
+    if (agreed) SetEulaAccepted(hash);
     return agreed;
 }
 

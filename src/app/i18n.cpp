@@ -25,6 +25,7 @@
 
 #include "app/settings.h"
 #include "app/text.h"
+#include "platform/ini.h"
 
 // Keys are stable identifiers; every value carries both languages side by side so
 // a new string cannot be added to one language and forgotten in the other.
@@ -56,6 +57,7 @@ const std::map<std::wstring, Pair>& Table() {
         {L"version.display",  {L"V5.1.2", L"V5.1.2"}},
 
         {L"status.dns",       {L"DNS Redirection", L"DNS 重定向"}},
+        {L"status.proxy",     {L"DNS Proxy", L"DNS 代理"}},
         {L"status.nginx",     {L"Nginx", L"Nginx"}},
         {L"status.route",     {L"Route Service", L"路由服务"}},
         {L"status.running",   {L"Running", L"运行中"}},
@@ -158,11 +160,19 @@ const std::map<std::wstring, Pair>& Table() {
                                L"security software, network or registry optimization tools, or Group Policy.",
                                L"DNS 策略规则多次恢复后均被再次删除，无法重定向任何域名。"
                                L"可能是安全软件、网络或注册表优化工具或组策略正在持续删除该规则。"}},
+        {L"reason.dnsProxyStopped", {L"The encrypted DNS proxy has stopped responding. This may be caused by "
+                               L"a local network stack failure or interference from security software.",
+                               L"加密 DNS 代理已停止响应。可能是本机网络组件故障或被安全软件拦截。"}},
         {L"msg.dnsStartFail", {L"Could not start DNS redirection.\n"
                                L"Another program may already be using 127.11.45.14:53, or the "
                                L"DNS Client service may be disabled.",
                                L"无法启动 DNS 重定向。\n"
                                L"可能是 127.11.45.14:53 已被其他程序占用，或 DNS Client 服务被禁用。"}},
+        {L"msg.dnsProxyStartFail", {L"Could not start the encrypted DNS proxy.\n"
+                               L"Its configuration may be missing or invalid, or another program may "
+                               L"already be using 127.191.98.10:53.",
+                               L"无法启动加密 DNS 代理。\n"
+                               L"可能是配置缺失或无效，或 127.191.98.10:53 已被其他程序占用。"}},
         {L"msg.dnsClientOff", {L"Windows' \"DNS Client\" service is not running. Without this "
                                L"service, SNIBypassGUI cannot redirect any domain and none of "
                                L"the supported sites will take effect, so the program has not "
@@ -201,6 +211,11 @@ const std::map<std::wstring, Pair>& Table() {
                                L"have been tampered with. Nothing on your computer was changed.",
                                L"更新内容未通过签名验证，已拒绝安装。\n"
                                L"下载的内容可能已被篡改。本次操作未对您的计算机作出任何更改。"}},
+        {L"msg.updVerifyUnavailable", {L"The update could not be verified because this system does "
+                               L"not provide the required cryptography. Nothing on your computer "
+                               L"was changed.",
+                               L"此系统未提供所需的加密功能，无法验证更新内容。\n"
+                               L"本次操作未对您的计算机作出任何更改。"}},
         {L"msg.updParseFail", {L"The update information is malformed and was rejected.",
                                L"更新信息格式无效，已拒绝安装。"}},
         {L"msg.updSchema",    {L"This version is too old to understand the update server's format. "
@@ -238,6 +253,9 @@ const std::map<std::wstring, Pair>& Table() {
         {L"msg.itemsDeleted", {L"items deleted", L"个项目已删除"}},
         {L"msg.langChanged",  {L"Language changed.", L"语言已切换。"}},
         {L"msg.copied",       {L"Copied to clipboard.", L"已复制到剪贴板。"}},
+        {L"msg.editHostsFail", {L"Could not locate the system Hosts file because the Windows "
+                               L"directory could not be resolved.",
+                               L"无法解析 Windows 目录，因而找不到系统 Hosts 文件。"}},
         {L"msg.shortcutAsk",  {L"Create a SNIBypassGUI shortcut on your desktop?",
                                L"是否在桌面创建 SNIBypassGUI 的快捷方式？"}},
         {L"msg.shortcutFail", {L"Could not create the desktop shortcut.", L"创建桌面快捷方式失败。"}},
@@ -272,10 +290,7 @@ Lang GetLang() {
     const int cached = g_lang.load(std::memory_order_relaxed);
     if (cached >= 0) return static_cast<Lang>(cached);
 
-    wchar_t buf[16] = {};
-    GetPrivateProfileStringW(L"General", L"Language", L"", buf,
-                             static_cast<DWORD>(std::size(buf)), SettingsPath().c_str());
-    const std::wstring value = LowerW(TrimW(buf));
+    const std::wstring value = LowerW(Ini::Value(SettingsPath(), L"General", L"Language"));
     Lang resolved;
     if (value == L"zh" || value == L"cn" || value == L"chinese")
         resolved = Lang::Chinese;

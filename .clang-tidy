@@ -1,0 +1,77 @@
+# Copyright © 2026 Racpast. All Rights Reserved.
+#
+# This file is part of SNIBypassGUI, a proprietary software project.
+#
+# NOTICE: All information contained herein is, and remains the property of
+# Racpast. The intellectual and technical concepts contained herein are
+# proprietary to Racpast and are protected by copyright law and international
+# treaties. Dissemination of this information or reproduction of this material
+# is strictly forbidden unless prior written permission is obtained from Racpast.
+#
+# Unauthorized copying, modification, distribution, or use of this file,
+# via any medium, is strictly prohibited.
+#
+# For licensing inquiries: snibypassgui@gmail.com or racpast@gmail.com
+#
+# See the LICENSE file in the project root for full terms and conditions.
+
+# Static analysis for the classes of defect the compiler's -Wall -Wextra cannot see.
+#
+# The checks enabled here are the ones this codebase has actually been bitten by, or
+# has a structural reason to be exposed to:
+#
+#   * concurrency-*  — this program runs an event loop, a worker pool, a guardian
+#     thread, a watchdog and detached command workers over shared state. A missing
+#     lock or a mis-specified memory order is the failure mode with the worst
+#     consequences and the least visibility.
+#   * bugprone-*     — the general class, which is where a use-after-move, a
+#     dangling reference or a mis-sized copy shows up.
+#   * cert-*         — the platform-security subset: what the network, crypto and
+#     registry code has to get right.
+#   * performance-*  — not for micro-optimization but for the accidental copies that
+#     this codebase makes in loops (a std::wstring built per log line, a vector copied
+#     where a reference was meant).
+#
+# NOT enabled wholesale, and why:
+#   * readability-* and modernize-* are style. The project has a formatter and a
+#     documented style; a second opinion that rewrites code is churn, not a defect
+#     report.
+#   * clang-analyzer-* is largely covered by the compiler already at -O2, and its
+#     slower checks are better run as a periodic audit than on every change.
+#
+# The list is deliberately a starting point rather than the full set. `-Werror` is on
+# for the build, so every check added here is zero-tolerance from the moment it lands;
+# widening this set is a decision to be made a check at a time against a green tree,
+# not by turning everything on and triaging the avalanche.
+
+Checks: >
+  -*,
+  bugprone-*,
+  concurrency-*,
+  cert-*,
+  performance-*
+
+WarningsAsErrors: '*'
+
+FormatStyle: file
+
+# The project's own headers, plus the translation units themselves. The build tree
+# holds the downloaded libsodium headers and CMake's generated resource fragments,
+# neither of which is ours to fix.
+HeaderFilterRegex: '^(.*/)?(src|tests)/.*\.(h|cpp)$'
+
+CheckOptions:
+  # Checks this codebase deliberately does not satisfy, each for a stated reason.
+  # Recorded here rather than as per-line NOLINTs so every exemption is reviewable
+  # in one place.
+
+  # MinGW's own headers and the Windows SDK use reserved spellings; the diagnostics
+  # land in code this project did not write. The list is what the gate needs to ignore
+  # to stay quiet about them and nothing else.
+  - key: bugprone-reserved-identifier.AllowedIdentifiers
+    value: '_WIN32_WINNT;_UNICODE;UNICODE;__cplusplus;_CRT_SECURE_NO_WARNINGS'
+
+  # A 64-character hex digest passed beside another string is worth flagging; a pair
+  # of different types never is, and most of this program's parameters are strings.
+  - key: bugprone-easily-swappable-parameters.IgnoreNonTrivialTypes
+    value: true

@@ -119,7 +119,7 @@ bool Redirector::Start() {
     {
         std::lock_guard<std::mutex> table(m_tableMx);
         if (!Nrpt::InstallRule(namespaces, kResolverAddress)) {
-            m_resolver.Stop();
+            RollBackStart();
             return false;
         }
     }
@@ -127,8 +127,36 @@ bool Redirector::Start() {
     // Last, and only once both halves are in place: the guardian's first act is to
     // compare the table against what it should say, and starting it any earlier
     // would have it race the install it is meant to be checking.
-    StartGuardian();
+    //
+    // A redirection that cannot be watched is refused outright. The header's whole
+    // account of what is safe to leave running rests on the guardian noticing a
+    // server that has stopped answering while the rule still points at it — without
+    // it, that state is not merely unwatched, it is unobservable, and every names
+    // the rule covers hangs until the client gives up. Saying so beats returning
+    // true over it.
+    if (!StartGuardian()) {
+        LOGE(L"DNS redirection could not be started: there is no guardian to watch it.");
+        RollBackStart();
+        return false;
+    }
     return true;
+}
+
+// Start has given up. Take back the two halves in the order Stop takes them —
+// names stop being sent here before the server that answers them goes away, so no
+// query is ever routed to a port that has just closed — and clear the failure that
+// the attempt recorded, because a Start that returned false has no outstanding
+// failure to report: the caller was told by the return value, and Stop's contract
+// is that a stopped object leaves nothing in a failed state to describe.
+void Redirector::RollBackStart() {
+    StopGuardian();
+    {
+        std::lock_guard<std::mutex> table(m_tableMx);
+        Nrpt::RemoveRule();
+    }
+    m_resolver.Stop();
+    m_failure.store(RedirectFailure::None);
+    if (m_failed) ResetEvent(m_failed);
 }
 
 void Redirector::Stop() {
@@ -196,7 +224,7 @@ void Redirector::Fail(RedirectFailure cause, const wchar_t* detail) {
     SetEvent(m_failed);
 }
 
-void Redirector::StartGuardian() {
+bool Redirector::StartGuardian() {
     StopGuardian();
 
     // A previous session's failure is not this one's, and Stop has already cleared
@@ -210,19 +238,23 @@ void Redirector::StartGuardian() {
     if (!m_failed) m_failed = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!m_guardCancel || !m_failed) {
         LOGE(L"DNS redirection: cannot create the guardian's events (err " +
-             std::to_wstring(GetLastError()) +
-             L"); redirection that stops on its own will go unnoticed.");
-        return;
+             std::to_wstring(GetLastError()) + L").");
+        return false;
     }
     ResetEvent(m_guardCancel);
     ResetEvent(m_failed);
 
+    // The handles above outlive a failed attempt on purpose: they are opened once
+    // and reused, and handing them back to the kernel would only mean opening them
+    // again on the next Start.
     try {
         m_guard = std::thread([this] { Guard(); });
     } catch (const std::system_error& e) {
         LOGE(L"DNS redirection: cannot create the guardian thread (" + Utf8ToWide(e.what()) +
-             L"); redirection that stops on its own will go unnoticed.");
+             L").");
+        return false;
     }
+    return true;
 }
 
 void Redirector::StopGuardian() {
