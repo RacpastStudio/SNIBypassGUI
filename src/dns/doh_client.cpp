@@ -119,7 +119,7 @@ std::vector<uint8_t> QueryDoH(const std::vector<uint8_t>& query, const std::stri
         return {};
     }
 
-    const std::string hostHeader = hostname;
+    const std::string& hostHeader = hostname;
     const std::vector<uint8_t> httpRequest = BuildHttpRequest(hostHeader, path, query);
 
     if (!TlsUtils::Send(sock, ctxtHandle.Get(), httpRequest, timeoutMs / 2, cancel)) {

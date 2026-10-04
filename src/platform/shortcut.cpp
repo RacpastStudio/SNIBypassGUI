@@ -60,7 +60,11 @@ std::wstring ReadLinkTarget(const std::wstring& lnk) {
 
     Com::Ptr<IPersistFile> file;
     if (FAILED(link->QueryInterface(IID_IPersistFile, file.PutVoid()))) return L"";
-    if (FAILED(file->Load(lnk.c_str(), STGM_READ))) return L"";
+    // MinGW defines STGM_READ through __MSABI_LONG, which spells the literal with a
+    // lowercase 'l' that cert-dcl16-c rejects — and reports against the macro, so the
+    // diagnostic carries no location to annotate. The value is the SDK's.
+    constexpr DWORD kStgmRead = 0x00000000L;
+    if (FAILED(file->Load(lnk.c_str(), kStgmRead))) return L"";
 
     wchar_t buf[MAX_PATH * 2] = {};
     // SLGP_RAWPATH reads the stored path as-is, without letting the shell "resolve"

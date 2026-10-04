@@ -208,18 +208,18 @@ int Run(const wchar_t* commandLine) {
         const std::wstring arg = argv[i];
         if (arg == L"--apply-plan") {
             if (i + 1 >= argc || !planPath.empty()) {
-                LocalFree(argv);
+                LocalFree(static_cast<void*>(argv));
                 return kExitBadArgs;
             }
             planPath = argv[++i];
         } else {
             // Unknown arguments are refused rather than ignored: this program has one
             // documented form, and running it any other way is a mistake worth failing.
-            LocalFree(argv);
+            LocalFree(static_cast<void*>(argv));
             return kExitBadArgs;
         }
     }
-    LocalFree(argv);
+    LocalFree(static_cast<void*>(argv));
 
     if (planPath.empty()) return kExitBadArgs;
 

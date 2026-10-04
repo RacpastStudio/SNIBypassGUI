@@ -17,6 +17,7 @@
 
 #include <shellapi.h>
 
+#include <cstdint>
 #include <cwchar>
 #include <iterator>
 #include <string>
@@ -49,33 +50,33 @@ constexpr UINT kTrayMessage = WM_APP + 1;
 constexpr UINT kTrayIconId = 1;
 constexpr wchar_t kWindowClass[] = L"SNIBypassGUI_TrayWnd";
 
-enum MenuId : UINT {
+enum MenuId : std::uint16_t {
     kIdStatusDns = 2000,
-    kIdStatusProxy,
-    kIdStatusNginx,
-    kIdStatusRoute,
-    kIdVersion,
-    kIdStart,
-    kIdStop,
-    kIdToggleAutostart,
-    kIdCheckUpdate,
-    kIdToggleAutoUpdate,
-    kIdEditHosts,
-    kIdCleanCache,
-    kIdToggleLog,
-    kIdLangEnglish,
-    kIdLangChinese,
-    kIdExit,
-    kIdUninstall,
-    kIdAboutApp,
-    kIdAboutCopyright,
-    kIdAboutQq1,
-    kIdAboutQq2,
-    kIdAboutTelegram,
-    kIdAboutEmail,
-    kIdAboutStar,
-    kIdAboutSponsor,
-    kIdViewEula,
+    kIdStatusProxy = 2001,
+    kIdStatusNginx = 2002,
+    kIdStatusRoute = 2003,
+    kIdVersion = 2004,
+    kIdStart = 2005,
+    kIdStop = 2006,
+    kIdToggleAutostart = 2007,
+    kIdCheckUpdate = 2008,
+    kIdToggleAutoUpdate = 2009,
+    kIdEditHosts = 2010,
+    kIdCleanCache = 2011,
+    kIdToggleLog = 2012,
+    kIdLangEnglish = 2013,
+    kIdLangChinese = 2014,
+    kIdExit = 2015,
+    kIdUninstall = 2016,
+    kIdAboutApp = 2017,
+    kIdAboutCopyright = 2018,
+    kIdAboutQq1 = 2019,
+    kIdAboutQq2 = 2020,
+    kIdAboutTelegram = 2021,
+    kIdAboutEmail = 2022,
+    kIdAboutStar = 2023,
+    kIdAboutSponsor = 2024,
+    kIdViewEula = 2025,
     kIdSupportedSitesFirst = 5000,
 };
 

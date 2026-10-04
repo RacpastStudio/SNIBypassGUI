@@ -21,6 +21,7 @@
 
 #include <shellapi.h>
 
+#include <cstdint>
 #include <fstream>
 #include <map>
 #include <set>
@@ -181,7 +182,7 @@ struct Staged {
 };
 
 // Outcome of one download pass over a manifest.
-enum class DownloadResult {
+enum class DownloadResult : std::uint8_t {
     Ok,     // every changed file staged and verified
     Stale,  // remote disagreed with the manifest — re-fetch and retry
     Hard,   // local error a retry cannot fix (disk, write, hash engine)

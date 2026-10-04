@@ -306,9 +306,9 @@ void RefreshUpstreams(ResolverState& s) {
 // question are checked as well, on the way in.
 uint16_t NextUpstreamId(ResolverState& s) {
     for (int attempt = 0; attempt < 64; ++attempt) {
-        s.idState ^= s.idState << 13;
-        s.idState ^= s.idState >> 17;
-        s.idState ^= s.idState << 5;
+        s.idState ^= s.idState << 13u;
+        s.idState ^= s.idState >> 17u;
+        s.idState ^= s.idState << 5u;
         const uint16_t candidate = static_cast<uint16_t>(s.idState);
         bool taken = false;
         for (const PendingUdp& p : s.pending)
@@ -325,8 +325,9 @@ std::vector<uint8_t> TryAnswer(const RuleSet& rules, const uint8_t* msg, size_t 
     // Only a standard query is interpreted. A response arriving at a listener, an
     // UPDATE or a NOTIFY means something this resolver has no opinion about, and
     // rewriting its header as if it were a lookup would corrupt it.
-    if ((q.flags & 0x8000) != 0) return {};       // QR: already a response
-    if (((q.flags >> 11) & 0xF) != 0) return {};  // opcode other than QUERY
+    if ((q.flags & 0x8000u) != 0) return {};  // QR: already a response
+    if (((static_cast<unsigned>(q.flags) >> 11u) & 0xFu) != 0)
+        return {};  // opcode other than QUERY
     if (q.qclass != kClassIn) return {};
 
     const Rule* rule = rules.Match(q.name);
@@ -365,7 +366,7 @@ void ForwardUdp(ResolverState& s, const uint8_t* msg, size_t len, const Query& q
     // survives the trip.
     const uint16_t id = NextUpstreamId(s);
     std::vector<uint8_t> outbound(msg, msg + len);
-    outbound[0] = static_cast<uint8_t>(id >> 8);
+    outbound[0] = static_cast<uint8_t>(id >> 8u);
     outbound[1] = static_cast<uint8_t>(id);
 
     bool sent = false;
@@ -440,7 +441,8 @@ void HandleUpstreamReply(ResolverState& s, SOCKET sock) {
         if (SameHost(upstream.addr, from)) fromUpstream = true;
     if (!fromUpstream) return;
 
-    const uint16_t id = static_cast<uint16_t>((s.scratch[0] << 8) | s.scratch[1]);
+    const uint16_t id =
+        static_cast<uint16_t>((static_cast<unsigned>(s.scratch[0]) << 8u) | s.scratch[1]);
     for (auto it = s.pending.begin(); it != s.pending.end(); ++it) {
         if (it->upstreamId != id) continue;
         if (len < it->question.size() ||
@@ -458,7 +460,7 @@ void HandleUpstreamReply(ResolverState& s, SOCKET sock) {
         // path that reassembles fragments, would otherwise have its oversized
         // reply relayed to a client whose buffer cannot hold it.
         std::vector<uint8_t> response(s.scratch.begin(), s.scratch.begin() + received);
-        response[0] = static_cast<uint8_t>(it->clientId >> 8);
+        response[0] = static_cast<uint8_t>(it->clientId >> 8u);
         response[1] = static_cast<uint8_t>(it->clientId);
 
         if (ApplyUdpBudget(it->question.data(), it->question.size(), response,
@@ -562,8 +564,9 @@ bool ServeBufferedQuery(ResolverState& s, TcpSession& t, const RuleSet& rules) {
     // transaction id: one query owns this connection, so there is nothing to
     // demultiplex and no reason to rewrite it. The prefix is re-applied because
     // the reader hands back the payload it framed.
-    t.question.assign(message.begin(), message.begin() + q.questionEnd);
-    t.query = q;
+    t.question.assign(message.begin(),
+                      message.begin() + static_cast<std::ptrdiff_t>(q.questionEnd));
+    t.query = std::move(q);
     t.upOut = EncodeTcpMessage(message);
     if (t.upOut.empty()) return false;
     t.upSent = 0;

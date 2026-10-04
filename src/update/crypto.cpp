@@ -44,8 +44,8 @@ std::wstring ToHex(const uint8_t* d, size_t n) {
     std::wstring s;
     s.reserve(n * 2);
     for (size_t i = 0; i < n; ++i) {
-        s.push_back(kDigits[d[i] >> 4]);
-        s.push_back(kDigits[d[i] & 0xF]);
+        s.push_back(kDigits[d[i] >> 4u]);
+        s.push_back(kDigits[d[i] & 0xFu]);
     }
     return s;
 }
@@ -144,15 +144,15 @@ bool Base64Decode(const std::string& in, std::vector<uint8_t>& out) {
     if (pad > 2) return false;
 
     uint32_t accumulator = 0;
-    int bits = 0;
+    unsigned bits = 0;
     for (size_t i = 0; i < end; ++i) {
         const int v = sextet(in[i]);
         if (v < 0) return false;  // includes any '=' before the final run
-        accumulator = (accumulator << 6) | static_cast<uint32_t>(v);
+        accumulator = (accumulator << 6u) | static_cast<uint32_t>(v);
         bits += 6;
         if (bits >= 8) {
             bits -= 8;
-            decoded.push_back(static_cast<uint8_t>((accumulator >> bits) & 0xFF));
+            decoded.push_back(static_cast<uint8_t>((accumulator >> bits) & 0xFFu));
         }
     }
 

@@ -58,7 +58,7 @@ bool ReadFileAsWide(const std::wstring& file, std::wstring& out) {
     LARGE_INTEGER size = {};
     // An INI this large is not a configuration file; refusing keeps a hostile or
     // corrupt file from asking for an unbounded read.
-    constexpr long long kMaxFileBytes = 64ll * 1024 * 1024;
+    constexpr long long kMaxFileBytes = 64LL * 1024 * 1024;
     if (!GetFileSizeEx(handle, &size) || size.QuadPart <= 0 || size.QuadPart > kMaxFileBytes) {
         CloseHandle(handle);
         return false;
@@ -82,14 +82,16 @@ bool ReadFileAsWide(const std::wstring& file, std::wstring& out) {
         const size_t count = (n - 2) / 2;
         out.resize(count);
         for (size_t i = 0; i < count; ++i)
-            out[i] = static_cast<wchar_t>(p[2 + i * 2] | (p[3 + i * 2] << 8));
+            out[i] = static_cast<wchar_t>(static_cast<unsigned>(p[2 + i * 2]) |
+                                          (static_cast<unsigned>(p[3 + i * 2]) << 8u));
         return true;
     }
     if (n >= 2 && p[0] == 0xFE && p[1] == 0xFF) {  // UTF-16BE
         const size_t count = (n - 2) / 2;
         out.resize(count);
         for (size_t i = 0; i < count; ++i)
-            out[i] = static_cast<wchar_t>((p[2 + i * 2] << 8) | p[3 + i * 2]);
+            out[i] = static_cast<wchar_t>((static_cast<unsigned>(p[2 + i * 2]) << 8u) |
+                                          static_cast<unsigned>(p[3 + i * 2]));
         return true;
     }
 
@@ -200,9 +202,15 @@ std::wstring Value(const std::vector<Section>& sections, const wchar_t* section,
         for (const auto& entry : s.entries) {
             if (!EqualsNoCase(entry.first, wantKey)) continue;
             if (entry.second.size() > maxChars) {
-                LOGE(L"[Ini] value of [" + wantSection + L"] " + wantKey + L" is longer than " +
-                     std::to_wstring(maxChars) +
-                     L" characters; rejecting it rather than returning a partial value.");
+                std::wstring msg;
+                msg += L"[Ini] value of [";
+                msg += wantSection;
+                msg += L"] ";
+                msg += wantKey;
+                msg += L" is longer than ";
+                msg += std::to_wstring(maxChars);
+                msg += L" characters; rejecting it rather than returning a partial value.";
+                LOGE(msg);
                 return {};
             }
             return entry.second;

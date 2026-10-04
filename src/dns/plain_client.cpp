@@ -101,7 +101,7 @@ std::vector<uint8_t> QueryPlainDns(const std::vector<uint8_t>& query,
     const uint32_t udpBudget = timeoutMs / 2;
     const uint32_t tcpBudget = timeoutMs - udpBudget;
 
-    const std::vector<uint8_t> overUdp = QueryUdp(query, endpoint, udpBudget, cancel);
+    std::vector<uint8_t> overUdp = QueryUdp(query, endpoint, udpBudget, cancel);
     if (overUdp.empty()) return {};
 
     // The whole point of the transport. TC=1 means the server had more to say

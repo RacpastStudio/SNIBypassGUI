@@ -13,7 +13,7 @@
 namespace Dns {
 namespace {
 
-constexpr size_t kMaxHeaderBytes = 64 * 1024;
+constexpr size_t kMaxHeaderBytes = size_t{64} * 1024;
 constexpr size_t kMaxBodyBytes = 65535;
 
 std::string Lower(std::string value) {

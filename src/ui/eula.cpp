@@ -17,6 +17,8 @@
 
 #include "ui/eula.h"
 
+#include <cstdint>
+#include <cstring>
 #include <cwchar>
 #include <utility>
 #include <vector>
@@ -36,10 +38,10 @@
 namespace Eula {
 namespace {
 
-enum { kIdIntro = 101, kIdText = 102 };
+enum : std::uint8_t { kIdIntro = 101, kIdText = 102 };
 
 // Standard control class atoms.
-enum : WORD { kAtomButton = 0x0080, kAtomEdit = 0x0081, kAtomStatic = 0x0082 };
+enum : std::uint8_t { kAtomButton = 0x0080, kAtomEdit = 0x0081, kAtomStatic = 0x0082 };
 
 // Builds a DLGTEMPLATE, honouring the DWORD alignment the format requires.
 struct TemplateBuilder {
@@ -117,12 +119,15 @@ std::vector<BYTE> BuildTemplate(bool gated) {
 
 INT_PTR CALLBACK DialogProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
-        case WM_INITDIALOG:
-            SetWindowTextW(GetDlgItem(dlg, kIdText), reinterpret_cast<const wchar_t*>(lp));
+        case WM_INITDIALOG: {
+            const void* textPtr = nullptr;
+            std::memcpy(reinterpret_cast<void*>(&textPtr), &lp, sizeof(textPtr));
+            SetWindowTextW(GetDlgItem(dlg, kIdText), static_cast<const wchar_t*>(textPtr));
             // Move the caret to the top so long text starts at the beginning.
             SendDlgItemMessageW(dlg, kIdText, EM_SETSEL, 0, 0);
             SetFocus(GetDlgItem(dlg, IDOK));
             return FALSE;  // focus was set explicitly
+        }
 
         case WM_COMMAND:
             switch (LOWORD(wp)) {

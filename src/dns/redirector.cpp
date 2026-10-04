@@ -19,6 +19,7 @@
 
 #include <windows.h>
 
+#include <cstdint>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -338,7 +339,7 @@ void Redirector::Guard() {
     // Cancellation first, so it wins a tie: WaitForMultipleObjects reports the
     // lowest signalled index, and a stop arriving at the same instant as a failure
     // is a stop.
-    enum { kCancel = 0, kServerStopped, kRuleChanged, kWaitCount };
+    enum : std::uint8_t { kCancel = 0, kServerStopped, kRuleChanged, kWaitCount };
     HANDLE waits[kWaitCount] = {};
     waits[kCancel] = m_guardCancel;
     waits[kServerStopped] = m_resolver.stoppedHandle();

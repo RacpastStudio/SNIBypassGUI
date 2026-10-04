@@ -146,22 +146,22 @@ std::wstring RandomPlanFileName() {
         // hole, so this degrades instead of aborting.
         LARGE_INTEGER ticks = {};
         QueryPerformanceCounter(&ticks);
-        ULONGLONG mixed = ticks.QuadPart ^
-                          (static_cast<ULONGLONG>(GetCurrentProcessId()) << 32) ^
+        ULONGLONG mixed = static_cast<ULONGLONG>(ticks.QuadPart) ^
+                          (static_cast<ULONGLONG>(GetCurrentProcessId()) << 32u) ^
                           static_cast<ULONGLONG>(GetTickCount64());
         for (unsigned char& b : bytes) {
-            mixed ^= mixed >> 12;
-            mixed ^= mixed << 25;
-            mixed ^= mixed >> 27;
-            b = static_cast<unsigned char>((mixed * 2685821657736338717ULL) >> 24);
+            mixed ^= mixed >> 12u;
+            mixed ^= mixed << 25u;
+            mixed ^= mixed >> 27u;
+            b = static_cast<unsigned char>((mixed * 2685821657736338717ULL) >> 24u);
         }
     }
 
     std::wstring name = L"plan-";
     name.reserve(5 + sizeof(bytes) * 2 + 4);
     for (unsigned char b : bytes) {
-        name.push_back(kHex[b >> 4]);
-        name.push_back(kHex[b & 0xF]);
+        name.push_back(kHex[b >> 4u]);
+        name.push_back(kHex[b & 0xFu]);
     }
     name += L".tmp";
     return name;

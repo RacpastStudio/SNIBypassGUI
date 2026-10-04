@@ -121,7 +121,7 @@ DNSCryptCert ParseCertificate(const uint8_t* certData, size_t certLen,
 
     // Read es-version (big-endian uint16 at offset 4)
     const uint16_t esVersion =
-        (static_cast<uint16_t>(certData[4]) << 8) | static_cast<uint16_t>(certData[5]);
+        (static_cast<unsigned>(certData[4]) << 8u) | static_cast<unsigned>(certData[5]);
 
     // Only accept XSalsa20 (0x0001) or XChaCha20 (0x0002)
     if (esVersion != kEsVersionXSalsa20 && esVersion != kEsVersionXChacha20) {
@@ -154,20 +154,21 @@ DNSCryptCert ParseCertificate(const uint8_t* certData, size_t certLen,
     ptr += kClientMagicLen;
 
     // Serial (4 bytes, big-endian)
-    cert.serial = (static_cast<uint32_t>(ptr[0]) << 24) |
-                  (static_cast<uint32_t>(ptr[1]) << 16) | (static_cast<uint32_t>(ptr[2]) << 8) |
-                  static_cast<uint32_t>(ptr[3]);
+    cert.serial = (static_cast<uint32_t>(ptr[0]) << 24u) |
+                  (static_cast<uint32_t>(ptr[1]) << 16u) |
+                  (static_cast<uint32_t>(ptr[2]) << 8u) | static_cast<uint32_t>(ptr[3]);
     ptr += 4;
 
     // ts-start (4 bytes, big-endian)
-    cert.tsStart = (static_cast<uint32_t>(ptr[0]) << 24) |
-                   (static_cast<uint32_t>(ptr[1]) << 16) |
-                   (static_cast<uint32_t>(ptr[2]) << 8) | static_cast<uint32_t>(ptr[3]);
+    cert.tsStart = (static_cast<uint32_t>(ptr[0]) << 24u) |
+                   (static_cast<uint32_t>(ptr[1]) << 16u) |
+                   (static_cast<uint32_t>(ptr[2]) << 8u) | static_cast<uint32_t>(ptr[3]);
     ptr += 4;
 
     // ts-end (4 bytes, big-endian)
-    cert.tsEnd = (static_cast<uint32_t>(ptr[0]) << 24) | (static_cast<uint32_t>(ptr[1]) << 16) |
-                 (static_cast<uint32_t>(ptr[2]) << 8) | static_cast<uint32_t>(ptr[3]);
+    cert.tsEnd = (static_cast<uint32_t>(ptr[0]) << 24u) |
+                 (static_cast<uint32_t>(ptr[1]) << 16u) |
+                 (static_cast<uint32_t>(ptr[2]) << 8u) | static_cast<uint32_t>(ptr[3]);
     ptr += 4;
 
     // Validity: ts-start must be strictly less than ts-end, and current time must be
@@ -221,8 +222,8 @@ std::vector<std::vector<uint8_t>> ExtractTxtRecords(const uint8_t* response, siz
     if (respLen < 12) return records;
 
     // Parse DNS header
-    const uint16_t qdcount = (static_cast<uint16_t>(response[4]) << 8) | response[5];
-    const uint16_t ancount = (static_cast<uint16_t>(response[6]) << 8) | response[7];
+    const uint16_t qdcount = (static_cast<unsigned>(response[4]) << 8u) | response[5];
+    const uint16_t ancount = (static_cast<unsigned>(response[6]) << 8u) | response[7];
 
     size_t offset = 12;
 
@@ -246,14 +247,14 @@ std::vector<std::vector<uint8_t>> ExtractTxtRecords(const uint8_t* response, siz
         if (offset + 10 > respLen) break;
 
         const uint16_t rrtype =
-            (static_cast<uint16_t>(response[offset]) << 8) | response[offset + 1];
+            (static_cast<unsigned>(response[offset]) << 8u) | response[offset + 1];
         offset += 2;
 
         // Skip CLASS (2) + TTL (4)
         offset += 6;
 
         const uint16_t rdlength =
-            (static_cast<uint16_t>(response[offset]) << 8) | response[offset + 1];
+            (static_cast<unsigned>(response[offset]) << 8u) | response[offset + 1];
         offset += 2;
 
         if (offset + rdlength > respLen) break;

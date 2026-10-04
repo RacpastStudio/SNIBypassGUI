@@ -67,6 +67,16 @@ int g_failures = 0;
         }                                                                 \
     } while (0)
 
+// std::getenv is not thread safe; this reads the same value through the Win32 API.
+bool EnvFlagSet(const wchar_t* name) {
+    const DWORD length = GetEnvironmentVariableW(name, nullptr, 0);
+    if (length == 0) return false;
+    std::wstring value(length, L'\0');
+    static_cast<void>(
+        GetEnvironmentVariableW(name, &value[0], static_cast<DWORD>(value.size())));
+    return true;
+}
+
 void TestNormalizeDomain() {
     using Dns::NormalizeDomain;
     CHECK(NormalizeDomain(".Google.COM.") == "google.com");
@@ -520,7 +530,7 @@ void TestResponseCarriesRuleAddress() {
         BuildResponse(kQueryAaaaCom, sizeof(kQueryAaaaCom), q, v4Rule, Action::Answer);
     CHECK(downgraded.size() == q.questionEnd);  // no record appended
     CHECK(downgraded[7] == 0);                  // ANCOUNT
-    CHECK((downgraded[3] & 0x0F) == kRcodeNoError);
+    CHECK((downgraded[3] & 0x0Fu) == kRcodeNoError);
 
     // And the same for a v6 rule's address.
     CHECK(ParseRuleLine("2001:db8::dead:beef .v6.example", parsed, err));
@@ -1039,7 +1049,7 @@ void TestDnsProxyConfigParsing() {
         if (!f) return;
         const size_t written = std::fwrite(ini.data(), 1, ini.size(), f);
         CHECK(written == ini.size());
-        std::fclose(f);
+        static_cast<void>(std::fclose(f));
     }
 
     const Dns::DnsProxyConfig config = Dns::DnsProxyConfig::Load(path);
@@ -1192,9 +1202,9 @@ std::vector<uint8_t> BuildLiveDnsQuery() {
 
 bool IsSuccessfulLiveDnsAnswer(const std::vector<uint8_t>& response, uint16_t id = 0x1234) {
     Dns::Query parsed;
-    return response.size() >= 12 && response[0] == static_cast<uint8_t>(id >> 8) &&
-           response[1] == static_cast<uint8_t>(id) && (response[2] & 0x80) != 0 &&
-           (response[3] & 0x0F) == Dns::kRcodeNoError &&
+    return response.size() >= 12 && response[0] == static_cast<uint8_t>(id >> 8u) &&
+           response[1] == static_cast<uint8_t>(id) && (response[2] & 0x80u) != 0 &&
+           (response[3] & 0x0Fu) == Dns::kRcodeNoError &&
            (response[6] != 0 || response[7] != 0) &&
            !Dns::IsTruncated(response.data(), response.size()) &&
            Dns::ParseQuery(response.data(), response.size(), parsed);
@@ -1237,7 +1247,7 @@ void TestLiveDnsProxy(const std::vector<uint8_t>& query) {
 
             std::vector<uint8_t> burstQuery = query;
             const uint16_t id = static_cast<uint16_t>(0x4000 + i);
-            burstQuery[0] = static_cast<uint8_t>(id >> 8);
+            burstQuery[0] = static_cast<uint8_t>(id >> 8u);
             burstQuery[1] = static_cast<uint8_t>(id);
             CHECK(Dns::NetworkUtils::SendUdp(burstSockets.back(), burstQuery,
                                              reinterpret_cast<const sockaddr*>(&local.address),
@@ -1269,7 +1279,7 @@ void TestLiveDnsProxy(const std::vector<uint8_t>& query) {
 }
 
 void TestLiveDnsTransports() {
-    if (std::getenv("SNIB_RUN_NETWORK_TESTS") == nullptr) return;
+    if (!EnvFlagSet(L"SNIB_RUN_NETWORK_TESTS")) return;
 
     const bool winsockReady = Dns::SocketUtils::EnsureWinsock();
     CHECK(winsockReady);
@@ -1692,15 +1702,16 @@ void TestIniReader() {
         if (!f) return;
         // A byte order mark first, so the file states its own encoding, as the profile
         // API's writes do.
-        std::fputwc(0xFEFF, f);
-        std::fwprintf(f, L"[Paths]\r\n");
-        std::fwprintf(f, L"Hosts=%ls\r\n", longValue.c_str());
-        std::fwprintf(f, L"Marker = spaced \r\n");
-        std::fwprintf(f, L"; comment=ignored\r\n");
-        std::fwprintf(f, L"[Uninstall]\r\n");
-        std::fwprintf(f, L"Remove=data\\one.txt|data\\two.txt\r\n");
-        std::fwprintf(f, L"Hosts=not-this-one\r\n");  // same key, different section
-        std::fclose(f);
+        static_cast<void>(std::fputwc(0xFEFF, f));
+        static_cast<void>(std::fwprintf(f, L"[Paths]\r\n"));
+        static_cast<void>(std::fwprintf(f, L"Hosts=%ls\r\n", longValue.c_str()));
+        static_cast<void>(std::fwprintf(f, L"Marker = spaced \r\n"));
+        static_cast<void>(std::fwprintf(f, L"; comment=ignored\r\n"));
+        static_cast<void>(std::fwprintf(f, L"[Uninstall]\r\n"));
+        static_cast<void>(std::fwprintf(f, L"Remove=data\\one.txt|data\\two.txt\r\n"));
+        static_cast<void>(
+            std::fwprintf(f, L"Hosts=not-this-one\r\n"));  // same key, different section
+        static_cast<void>(std::fclose(f));
     }
 
     const std::vector<Ini::Section> ini = Ini::Read(path);

@@ -63,16 +63,14 @@ bool ParseIpEndpoint(const std::string& text, uint16_t defaultPort, IpEndpoint& 
     } else {
         const size_t firstColon = text.find(':');
         const size_t lastColon = text.rfind(':');
-        if (firstColon == std::string::npos) {
+        if (firstColon == std::string::npos || firstColon != lastColon) {
+            // No colon at all, or more than one: an unbracketed IPv6 literal. A
+            // port would be ambiguous here and therefore requires brackets.
             host = text;
-        } else if (firstColon == lastColon) {
+        } else {
             if (firstColon == 0 || firstColon + 1 == text.size()) return false;
             host = text.substr(0, firstColon);
             portText = text.substr(firstColon + 1);
-        } else {
-            // More than one colon is an unbracketed IPv6 literal. A port would be
-            // ambiguous here and therefore requires brackets.
-            host = text;
         }
     }
 
@@ -229,7 +227,7 @@ std::vector<uint8_t> RecvLengthPrefixed(SOCKET sock, uint32_t timeoutMs,
     uint8_t lenBuf[2];
     if (!RecvExact(sock, lenBuf, 2, timeoutMs, cancel)) return {};
 
-    const uint16_t msgLen = (static_cast<uint16_t>(lenBuf[0]) << 8) | lenBuf[1];
+    const uint16_t msgLen = (static_cast<unsigned>(lenBuf[0]) << 8u) | lenBuf[1];
     // A zero length is not a DNS message, and the prefix cannot express more
     // than kMaxMessage, so only the degenerate case needs rejecting.
     if (msgLen == 0) return {};

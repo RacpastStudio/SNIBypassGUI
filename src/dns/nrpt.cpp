@@ -219,11 +219,14 @@ bool InstallRule(const std::vector<std::string>& namespaces, const std::wstring&
     // is deliberate: the values already written are about to be rolled back with
     // the key, and there is nothing a later write could add.
     LSTATUS failed = ERROR_SUCCESS;
-    if ((failed = SetDword(key, L"Version", kRuleVersion)) != ERROR_SUCCESS ||
-        (failed = SetMultiSz(key, L"Name", PackMultiSz(namespaces))) != ERROR_SUCCESS ||
-        (failed = SetSz(key, L"GenericDNSServers", dnsServer)) != ERROR_SUCCESS ||
-        (failed = SetDword(key, L"ConfigOptions", kConfigGenericDnsServers)) != ERROR_SUCCESS ||
-        (failed = SetSz(key, L"Comment", kComment)) != ERROR_SUCCESS) {
+    const bool writeFailed =
+        ((failed = SetDword(key, L"Version", kRuleVersion)) != ERROR_SUCCESS) ||
+        ((failed = SetMultiSz(key, L"Name", PackMultiSz(namespaces))) != ERROR_SUCCESS) ||
+        ((failed = SetSz(key, L"GenericDNSServers", dnsServer)) != ERROR_SUCCESS) ||
+        ((failed = SetDword(key, L"ConfigOptions", kConfigGenericDnsServers)) !=
+         ERROR_SUCCESS) ||
+        ((failed = SetSz(key, L"Comment", kComment)) != ERROR_SUCCESS);
+    if (writeFailed) {
         // The status travels out of the assign inside the condition; the branch is
         // taken only once the rollback below has been decided.
     }

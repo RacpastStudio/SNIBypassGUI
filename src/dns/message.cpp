@@ -23,23 +23,24 @@ namespace Dns {
 
 // DNS header and record fields are big-endian on the wire.
 uint16_t Read16(const uint8_t* p) {
-    return static_cast<uint16_t>((p[0] << 8) | p[1]);
+    return static_cast<uint16_t>((static_cast<unsigned>(p[0]) << 8u) |
+                                 static_cast<unsigned>(p[1]));
 }
 
 void Put16(std::vector<uint8_t>& v, uint16_t x) {
-    v.push_back(static_cast<uint8_t>(x >> 8));
+    v.push_back(static_cast<uint8_t>(static_cast<unsigned>(x) >> 8u));
     v.push_back(static_cast<uint8_t>(x));
 }
 
 void Put16At(uint8_t* p, uint16_t x) {
-    p[0] = static_cast<uint8_t>(x >> 8);
+    p[0] = static_cast<uint8_t>(static_cast<unsigned>(x) >> 8u);
     p[1] = static_cast<uint8_t>(x);
 }
 
 void Put32(std::vector<uint8_t>& v, uint32_t x) {
-    v.push_back(static_cast<uint8_t>(x >> 24));
-    v.push_back(static_cast<uint8_t>(x >> 16));
-    v.push_back(static_cast<uint8_t>(x >> 8));
+    v.push_back(static_cast<uint8_t>(x >> 24u));
+    v.push_back(static_cast<uint8_t>(x >> 16u));
+    v.push_back(static_cast<uint8_t>(x >> 8u));
     v.push_back(static_cast<uint8_t>(x));
 }
 
@@ -90,10 +91,12 @@ bool WalkName(const uint8_t* dns, size_t len, size_t& off, bool follow, std::str
             if (out != nullptr) *out = std::move(collected);
             return true;
         }
-        if ((label & 0xC0) == 0xC0) {
+        if ((label & 0xC0u) == 0xC0u) {
             if (!follow) return false;
             if (pos + 1 >= len) return false;
-            const size_t target = static_cast<size_t>(((label & 0x3F) << 8) | dns[pos + 1]);
+            const size_t target =
+                static_cast<size_t>(((static_cast<unsigned>(label) & 0x3Fu) << 8u) |
+                                    static_cast<unsigned>(dns[pos + 1]));
             if (target >= pos) return false;  // must point backwards
             if (!left) {
                 left = true;
@@ -102,7 +105,7 @@ bool WalkName(const uint8_t* dns, size_t len, size_t& off, bool follow, std::str
             pos = target;
             continue;
         }
-        if (label & 0xC0) return false;  // 0x40/0x80 are not label encodings
+        if ((label & 0xC0u) != 0) return false;  // 0x40/0x80 are not label encodings
         ++pos;
         if (pos + label > len) return false;
         if (out != nullptr) {
@@ -221,7 +224,7 @@ bool WalkRecords(const uint8_t* dns, size_t len, bool (*fn)(const RecordSpan&, v
 
 size_t QueryUdpPayloadSize(const uint8_t* dns, size_t len) {
     if (!dns || len < 12) return kMinUdpPayload;
-    if ((Read16(dns + 2) & 0x8000) != 0) return kMinUdpPayload;  // a response, not a query
+    if ((Read16(dns + 2) & 0x8000u) != 0) return kMinUdpPayload;  // a response, not a query
 
     // Only the additional section is of interest, and the OPT has to be in it.
     // Walking the answer and authority sections of a *query* is not meaningful —
@@ -345,9 +348,12 @@ UdpBudget ApplyUdpBudget(const uint8_t* query, size_t qlen, std::vector<uint8_t>
     // the datagram into whatever follows it.
     SurvivorTally tally;
     tally.limit = keep;
-    tally.declared[0] = static_cast<uint16_t>((response[6] << 8) | response[7]);
-    tally.declared[1] = static_cast<uint16_t>((response[8] << 8) | response[9]);
-    tally.declared[2] = static_cast<uint16_t>((response[10] << 8) | response[11]);
+    tally.declared[0] = static_cast<uint16_t>((static_cast<unsigned>(response[6]) << 8u) |
+                                              static_cast<unsigned>(response[7]));
+    tally.declared[1] = static_cast<uint16_t>((static_cast<unsigned>(response[8]) << 8u) |
+                                              static_cast<unsigned>(response[9]));
+    tally.declared[2] = static_cast<uint16_t>((static_cast<unsigned>(response[10]) << 8u) |
+                                              static_cast<unsigned>(response[11]));
     WalkRecords(response.data(), response.size(), TallyIfInside, &tally);
 
     Put16At(response.data() + 6, static_cast<uint16_t>(tally.kept[0]));
@@ -359,7 +365,7 @@ UdpBudget ApplyUdpBudget(const uint8_t* query, size_t qlen, std::vector<uint8_t>
     // Nothing else about the message says so — an oversized datagram is simply
     // dropped in transit, and a client that hears nothing repeats over UDP rather
     // than escalating.
-    response[2] = static_cast<uint8_t>(response[2] | 0x02);
+    response[2] = static_cast<uint8_t>(static_cast<unsigned>(response[2]) | 0x02u);
     response.resize(keep);
     return UdpBudget::Truncated;
 }
@@ -368,8 +374,8 @@ std::vector<uint8_t> BuildResponseHeader(const uint8_t* query, size_t qlen, cons
                                          uint8_t rcode) {
     if (q.questionEnd == 0 || q.questionEnd > qlen) return {};
     std::vector<uint8_t> r(query, query + q.questionEnd);
-    r[2] = 0x81;                                // QR=1, opcode 0, RD=1
-    r[3] = static_cast<uint8_t>(0x80 | rcode);  // RA=1, RCODE
+    r[2] = 0x81;                                 // QR=1, opcode 0, RD=1
+    r[3] = static_cast<uint8_t>(0x80u | rcode);  // RA=1, RCODE
     r[6] = 0;
     r[7] = 0;  // ANCOUNT
     r[8] = 0;
@@ -386,8 +392,9 @@ std::vector<uint8_t> BuildStatusResponse(const uint8_t* query, size_t qlen, cons
 
 bool IsTruncated(const uint8_t* dns, size_t len) {
     if (!dns || len < 12) return false;
-    const uint16_t flags = static_cast<uint16_t>((dns[2] << 8) | dns[3]);
-    return (flags & 0x0200) != 0;  // TC bit is bit 9 (0x0200)
+    const uint16_t flags = static_cast<uint16_t>((static_cast<unsigned>(dns[2]) << 8u) |
+                                                 static_cast<unsigned>(dns[3]));
+    return (flags & 0x0200u) != 0;  // TC bit is bit 9 (0x0200)
 }
 
 }  // namespace Dns

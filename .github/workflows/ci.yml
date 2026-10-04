@@ -119,6 +119,13 @@ jobs:
       # The checks are the ones in .clang-tidy, chosen for the failure modes this
       # codebase is actually exposed to (concurrency and bugprone especially; see that
       # file for the reasoning and for what is deliberately left off).
+      #
+      # --target is required: clang-tidy discards the compiler the database names and
+      # drives the flags through its own front end, which with no --target targets the
+      # host default (x86_64-pc-windows-msvc) and pulls the Windows SDK headers instead
+      # of MinGW's. Those headers need typedefs only MinGW's windows.h provides, so the
+      # include chain collapses. --extra-arg rather than a CMake flag because GCC does
+      # not accept --target, so it cannot live in compile_commands.json.
       - name: Static analysis (clang-tidy)
         shell: pwsh
         run: |
@@ -135,7 +142,8 @@ jobs:
           # Only the project's translation units: the analysis is driven by the
           # database, which also lists the generated resource scripts.
           $sources = git ls-files 'src/*.cpp' 'tests/*.cpp'
-          & $clangTidy -p build/clang-db --warnings-as-errors='*' $sources
+          & $clangTidy -p build/clang-db --warnings-as-errors='*' `
+              --extra-arg=--target=x86_64-w64-windows-gnu $sources
           if ($LASTEXITCODE -ne 0) {
               throw "clang-tidy reported findings. See .clang-tidy for the enabled checks."
           }

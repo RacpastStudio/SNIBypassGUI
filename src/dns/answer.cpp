@@ -40,9 +40,7 @@ std::vector<uint8_t> BuildResponse(const uint8_t* query, size_t qlen, const Quer
     // a v6-only rule), downgrade to NODATA (NOERROR, no answer) so the redirect
     // is not bypassed and no bogus default address is returned.
     if (answer) {
-        if (q.qtype == kTypeA && !rule.hasV4)
-            answer = false;
-        else if (q.qtype == kTypeAaaa && !rule.hasV6)
+        if ((q.qtype == kTypeA && !rule.hasV4) || (q.qtype == kTypeAaaa && !rule.hasV6))
             answer = false;
     }
 

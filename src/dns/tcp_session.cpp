@@ -33,8 +33,8 @@ std::vector<uint8_t> EncodeTcpMessage(const std::vector<uint8_t>& message) {
 
     std::vector<uint8_t> framed;
     framed.reserve(message.size() + 2);
-    framed.push_back(static_cast<uint8_t>((message.size() >> 8) & 0xFF));
-    framed.push_back(static_cast<uint8_t>(message.size() & 0xFF));
+    framed.push_back(static_cast<uint8_t>((message.size() >> 8u) & 0xFFu));
+    framed.push_back(static_cast<uint8_t>(message.size() & 0xFFu));
     framed.insert(framed.end(), message.begin(), message.end());
     return framed;
 }
@@ -61,7 +61,7 @@ TcpSessionReader::State TcpSessionReader::Parse() {
     if (available < 2) return State::Incomplete;
 
     const size_t declared =
-        (static_cast<size_t>(m_in[m_pos]) << 8) | static_cast<size_t>(m_in[m_pos + 1]);
+        (static_cast<size_t>(m_in[m_pos]) << 8u) | static_cast<size_t>(m_in[m_pos + 1]);
 
     // A zero-length message is legal on the wire and means nothing to anyone;
     // without rejecting it here the prefix would never advance and the

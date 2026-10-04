@@ -325,7 +325,7 @@ struct Completion {
 
 // One query the loop has dispatched and is waiting on.
 struct PendingQuery {
-    enum class Client { Udp, Tcp };
+    enum class Client : std::uint8_t { Udp, Tcp };
 
     std::shared_ptr<RaceState> race;
     Query query;
@@ -461,9 +461,11 @@ bool ValidAnswer(const std::vector<uint8_t>& response, const RaceState& race,
     if (response.size() < query.questionEnd) return false;
     if (response[0] != race.message[0] || response[1] != race.message[1]) return false;
 
-    const uint16_t flags = static_cast<uint16_t>((response[2] << 8) | response[3]);
-    if ((flags & 0x8000) == 0) return false;       // QR: must be a response
-    if (((flags >> 11) & 0xF) != 0) return false;  // opcode: must be QUERY
+    const uint16_t flags =
+        static_cast<uint16_t>((static_cast<unsigned>(response[2]) << 8u) | response[3]);
+    if ((flags & 0x8000u) == 0) return false;  // QR: must be a response
+    if (((static_cast<unsigned>(flags) >> 11u) & 0xFu) != 0)
+        return false;  // opcode: must be QUERY
     if (IsTruncated(response.data(), response.size())) return false;
 
     // The same question has to come back, byte for byte, from the QNAME to the
@@ -804,7 +806,7 @@ void HandleQuery(DnsProxyState& s, const uint8_t* message, size_t len,
 
     PendingQuery pending;
     pending.race = race;
-    pending.query = query;
+    pending.query = std::move(query);
     pending.deadline = Now() + s.timeoutMs + kTickMs;
     pending.origin = PendingQuery::Client::Udp;
     pending.address = client;
@@ -895,7 +897,7 @@ void ServiceTcpSession(DnsProxyState& s, TcpSession& session) {
 
         PendingQuery pending;
         pending.race = race;
-        pending.query = query;
+        pending.query = std::move(query);
         pending.deadline = session.deadline;
         pending.origin = PendingQuery::Client::Tcp;
         // The session's own weak pointer, so the query refers back to the
@@ -1070,14 +1072,13 @@ void DnsProxy::Loop(DnsProxyState& s) {
                 } else if (s.waits.Readable(session.socket)) {
                     char buffer[4096];
                     const int received = recv(session.socket, buffer, sizeof(buffer), 0);
-                    if (received == 0) {
-                        keep = false;  // the client closed its half
-                    } else if (received < 0) {
+                    if (received < 0) {
                         if (WSAGetLastError() != WSAEWOULDBLOCK) keep = false;
-                    } else if (session.reader.Append(reinterpret_cast<const uint8_t*>(buffer),
+                    } else if (received == 0 ||
+                               session.reader.Append(reinterpret_cast<const uint8_t*>(buffer),
                                                      static_cast<size_t>(received)) ==
-                               TcpSessionReader::State::Broken) {
-                        keep = false;
+                                   TcpSessionReader::State::Broken) {
+                        keep = false;  // the client closed its half
                     } else {
                         if (session.out.empty()) session.deadline = Now() + kTcpIdleTimeoutMs;
                         ServiceTcpSession(s, session);

@@ -60,14 +60,11 @@ bool MatchSegment(const std::wstring& seg, const std::wstring& pattern) {
     size_t starIdx = std::wstring::npos, matchIdx = 0;
 
     while (si < seg.size()) {
-        if (pi < pattern.size() && pattern[pi] == L'?') {
-            ++si;
-            ++pi;
-        } else if (pi < pattern.size() && pattern[pi] == L'*') {
+        if (pi < pattern.size() && pattern[pi] == L'*') {
             starIdx = pi;
             matchIdx = si;
             ++pi;
-        } else if (pi < pattern.size() && pattern[pi] == seg[si]) {
+        } else if (pi < pattern.size() && (pattern[pi] == L'?' || pattern[pi] == seg[si])) {
             ++si;
             ++pi;
         } else if (starIdx != std::wstring::npos) {
@@ -98,8 +95,12 @@ void EnumerateRecursive(const std::wstring& dir, const std::wstring& relPath,
 
         const bool isDir = (find.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
         const bool isReparse = (find.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
-        const std::wstring fullPath = dir + L"\\" + name;
-        const std::wstring rel = relPath.empty() ? name : relPath + L"\\" + name;
+        std::wstring fullPath = dir;
+        fullPath += L'\\';
+        fullPath += name;
+        std::wstring rel = relPath;
+        if (!rel.empty()) rel += L'\\';
+        rel += name;
 
         callback(rel, isDir);
 
@@ -283,7 +284,9 @@ void DeleteTree(const std::wstring& dir) {
     do {
         const std::wstring name = find.cFileName;
         if (name == L"." || name == L"..") continue;
-        const std::wstring full = dir + L"\\" + name;
+        std::wstring full = dir;
+        full += L'\\';
+        full += name;
 
         // Clear read-only so we can delete.
         if (find.dwFileAttributes & FILE_ATTRIBUTE_READONLY)
@@ -423,7 +426,10 @@ size_t DeleteByPatterns(const std::wstring& baseDir, const std::vector<std::wstr
     EnumerateRecursive(baseDir, L"", [&](const std::wstring& rel, bool isDir) {
         for (const GlobPattern& pat : compiled) {
             if (MatchesPattern(rel, pat)) {
-                matchMap[rel] = {rel, baseDir + L"\\" + rel, isDir};
+                std::wstring full = baseDir;
+                full += L'\\';
+                full += rel;
+                matchMap[rel] = {rel, full, isDir};
                 break;
             }
         }

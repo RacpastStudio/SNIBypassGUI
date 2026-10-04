@@ -35,7 +35,7 @@ namespace {
 using SocketUtils::Now;
 using SocketUtils::WaitResult;
 
-constexpr size_t kTlsBufferBytes = 64 * 1024;
+constexpr size_t kTlsBufferBytes = size_t{64} * 1024;
 
 uint32_t RemainingMs(uint64_t deadline) {
     const uint64_t now = Now();
@@ -57,7 +57,8 @@ bool CertificateMatchesPins(::CtxtHandle* context,
     if (hashes.empty()) return true;
 
     PCCERT_CONTEXT remote = nullptr;
-    if (QueryContextAttributes(context, SECPKG_ATTR_REMOTE_CERT_CONTEXT, &remote) != SEC_E_OK ||
+    if (QueryContextAttributes(context, SECPKG_ATTR_REMOTE_CERT_CONTEXT,
+                               static_cast<void*>(&remote)) != SEC_E_OK ||
         remote == nullptr) {
         LOGW(L"TLS: cannot inspect the remote certificate for pin validation");
         return false;

@@ -64,9 +64,12 @@ Stamp StampOf(const std::wstring& path) {
     Stamp stamp;
     WIN32_FILE_ATTRIBUTE_DATA data = {};
     if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data)) return stamp;
-    stamp.size = (static_cast<long long>(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
-    stamp.mtime = (static_cast<long long>(data.ftLastWriteTime.dwHighDateTime) << 32) |
-                  static_cast<long long>(data.ftLastWriteTime.dwLowDateTime);
+    stamp.size =
+        static_cast<long long>((static_cast<unsigned long long>(data.nFileSizeHigh) << 32u) |
+                               static_cast<unsigned long long>(data.nFileSizeLow));
+    stamp.mtime = static_cast<long long>(
+        (static_cast<unsigned long long>(data.ftLastWriteTime.dwHighDateTime) << 32u) |
+        static_cast<unsigned long long>(data.ftLastWriteTime.dwLowDateTime));
     stamp.known = true;
     return stamp;
 }

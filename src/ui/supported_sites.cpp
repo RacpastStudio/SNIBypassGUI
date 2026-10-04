@@ -17,6 +17,7 @@
 
 #include "ui/supported_sites.h"
 
+#include <cstdint>
 #include <fstream>
 #include <sstream>
 #include <utility>
@@ -84,7 +85,7 @@ constexpr size_t kMaxTextLen = 100;
 constexpr int kMaxIncludeDepth = 8;
 
 struct Node {
-    enum class Type { Text, Separator, Link, GroupBegin, GroupEnd };
+    enum class Type : std::uint8_t { Text, Separator, Link, GroupBegin, GroupEnd };
     Type type = Type::Text;
     std::wstring text;
     std::wstring link;
@@ -124,7 +125,7 @@ std::wstring SanitizeText(const std::wstring& s) {
     for (wchar_t c : s) out.push_back((c < 0x20 || c == 0x7F) ? L' ' : c);
     if (out.size() > kMaxTextLen) {
         out.resize(kMaxTextLen);
-        out += L"…";
+        out += L'…';
     }
     return out;
 }
@@ -197,7 +198,7 @@ bool IsRelativeIncludePath(const std::wstring& p) {
 std::wstring ResolveInclude(const std::wstring& rootDir, const std::wstring& includingDir,
                             const std::wstring& rel) {
     if (!IsRelativeIncludePath(rel)) return L"";
-    const std::wstring full = CanonicalPath(includingDir + rel);
+    std::wstring full = CanonicalPath(includingDir + rel);
     if (full.empty()) return L"";
     std::wstring root = CanonicalPath(rootDir);
     if (root.empty()) return L"";
@@ -222,9 +223,12 @@ struct FileStamp {
 void StampFile(const std::wstring& path, FileStamp& out) {
     WIN32_FILE_ATTRIBUTE_DATA data = {};
     if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data)) return;
-    out.size = (static_cast<long long>(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
-    out.mtime = (static_cast<long long>(data.ftLastWriteTime.dwHighDateTime) << 32) |
-                static_cast<long long>(data.ftLastWriteTime.dwLowDateTime);
+    out.size =
+        static_cast<long long>((static_cast<unsigned long long>(data.nFileSizeHigh) << 32u) |
+                               static_cast<unsigned long long>(data.nFileSizeLow));
+    out.mtime = static_cast<long long>(
+        (static_cast<unsigned long long>(data.ftLastWriteTime.dwHighDateTime) << 32u) |
+        static_cast<unsigned long long>(data.ftLastWriteTime.dwLowDateTime));
 }
 
 struct Cache {
@@ -248,7 +252,7 @@ Cache g_cache;
 //   parentActive was the enclosing context emitting when the IF opened
 //   seenElse     an ELSE has been consumed, so no ELIF/ELSE may follow
 struct Frame {
-    enum class Kind { Group, Cond };
+    enum class Kind : std::uint8_t { Group, Cond };
     Kind kind = Kind::Group;
     bool taken = false;
     bool active = false;

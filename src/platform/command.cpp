@@ -77,7 +77,7 @@ bool HasFlagTokenized(const std::wstring& line, const std::wstring& flag, bool s
 
     bool found = false;
     for (int i = skipFirst ? 1 : 0; i < argc && !found; ++i) found = (flag == argv[i]);
-    LocalFree(argv);
+    LocalFree(static_cast<void*>(argv));
     return found;
 }
 

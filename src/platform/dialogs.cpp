@@ -18,6 +18,8 @@
 #include "platform/dialogs.h"
 
 #include <condition_variable>
+#include <cstdint>
+#include <cstring>
 #include <mutex>
 #include <vector>
 
@@ -48,7 +50,7 @@ Destination g_dest;
 // requester is blocked for the whole of its life — the payload cannot outlive the
 // wait, and the UI thread cannot reach it after the wait returns.
 struct Request {
-    enum class State {
+    enum class State : std::uint8_t {
         Queued,     // posted, not yet picked up by the UI thread
         Running,    // the UI thread is inside the dialog
         Completed,  // answered
@@ -193,7 +195,9 @@ int Show(const std::wstring& text, UINT flags) {
 }
 
 void HandleShowMessage(HWND owner, LPARAM lp) {
-    auto* request = reinterpret_cast<Request*>(lp);
+    void* requestPtr = nullptr;
+    std::memcpy(reinterpret_cast<void*>(&requestPtr), &lp, sizeof(requestPtr));
+    auto* request = static_cast<Request*>(requestPtr);
 
     // Deregister before showing, so Shutdown can no longer consider it pending. From
     // here the request belongs to this thread until the answer is recorded — and this

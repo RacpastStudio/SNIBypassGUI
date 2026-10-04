@@ -65,7 +65,7 @@ namespace {
 // something that cannot answer. The children happen to be processes and the DNS
 // components happen to be threads and a registry key, but that is an implementation
 // detail of each, not a difference in how the stack treats them.
-enum class Component { Nginx, SniGate, DnsRedirection, DnsProxy };
+enum class Component : std::uint8_t { Nginx, SniGate, DnsRedirection, DnsProxy };
 
 // For the log: stable, ASCII, and the name the thing calls itself.
 const wchar_t* ComponentLogName(Component c) {
@@ -389,9 +389,12 @@ PathsStamp StampOfPathsFile() {
     WIN32_FILE_ATTRIBUTE_DATA data = {};
     if (!GetFileAttributesExW(PathsConfigFile().c_str(), GetFileExInfoStandard, &data))
         return stamp;
-    stamp.size = (static_cast<long long>(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
-    stamp.mtime = (static_cast<long long>(data.ftLastWriteTime.dwHighDateTime) << 32) |
-                  static_cast<long long>(data.ftLastWriteTime.dwLowDateTime);
+    stamp.size =
+        static_cast<long long>((static_cast<unsigned long long>(data.nFileSizeHigh) << 32u) |
+                               static_cast<unsigned long long>(data.nFileSizeLow));
+    stamp.mtime = static_cast<long long>(
+        (static_cast<unsigned long long>(data.ftLastWriteTime.dwHighDateTime) << 32u) |
+        static_cast<unsigned long long>(data.ftLastWriteTime.dwLowDateTime));
     stamp.known = true;
     return stamp;
 }

@@ -32,7 +32,7 @@ namespace {
 
 // TCP table ports are big-endian on the wire.
 int HostPort(DWORD tablePort) {
-    return static_cast<int>(((tablePort & 0xFF) << 8) | ((tablePort >> 8) & 0xFF));
+    return static_cast<int>(((tablePort & 0xFFu) << 8u) | ((tablePort >> 8u) & 0xFFu));
 }
 
 template <typename Table>

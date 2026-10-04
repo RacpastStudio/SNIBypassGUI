@@ -63,7 +63,7 @@ bool ReadUint64LE(const uint8_t*& ptr, const uint8_t* end, uint64_t& out) {
     if (ptr + 8 > end) return false;
     out = 0;
     for (int i = 0; i < 8; ++i) {
-        out |= static_cast<uint64_t>(ptr[i]) << (i * 8);
+        out |= static_cast<uint64_t>(ptr[i]) << (i * 8u);
     }
     ptr += 8;
     return true;
@@ -96,8 +96,8 @@ bool ReadVlpList(const uint8_t*& ptr, const uint8_t* end,
     for (;;) {
         if (ptr >= end) return false;
         const uint8_t vlen = *ptr++;
-        const uint8_t len = vlen & 0x7F;  // Clear continuation bit
-        const bool hasMore = (vlen & 0x80) != 0;
+        const uint8_t len = vlen & 0x7Fu;  // Clear continuation bit
+        const bool hasMore = (vlen & 0x80u) != 0;
 
         if (ptr + len > end) return false;
 
@@ -117,8 +117,8 @@ bool ReadVlpStringList(const uint8_t*& ptr, const uint8_t* end,
     for (;;) {
         if (ptr >= end) return false;
         const uint8_t vlen = *ptr++;
-        const uint8_t len = vlen & 0x7F;
-        const bool hasMore = (vlen & 0x80) != 0;
+        const uint8_t len = vlen & 0x7Fu;
+        const bool hasMore = (vlen & 0x80u) != 0;
 
         if (ptr + len > end) return false;
 
@@ -270,9 +270,7 @@ DNSStamp ParseDNSStamp(const std::string& stampStr) {
         case 0x01: return ParseDNSCryptStamp(bin.data(), bin.size());
         case 0x02: return ParseDoHStamp(bin.data(), bin.size());
         case 0x03: return ParseDoTStamp(bin.data(), bin.size());
-        case 0x04:
-            // DoQ (DNS-over-QUIC) not yet implemented
-            return {};
+        case 0x04:  // DoQ (DNS-over-QUIC) not yet implemented
         default: return {};
     }
 }
