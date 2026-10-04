@@ -1323,6 +1323,17 @@ void TestLiveDnsTransports() {
 // What that split needs is a guarantee that the two agree, and this is it. Every value
 // below is written by one and read back by the other, requiring the exact characters to
 // survive: the boundary cases are the ones where the two rule sets could differ.
+//
+// What the values deliberately do NOT include is non-ASCII, and that is a property of
+// the writer rather than an omission. A BOM-less file has no encoding of its own, so
+// WritePrivateProfileStringW picks the machine's ANSI code page for it: 中文路径
+// survives on a 936 machine and becomes "????" on the 1252 runner CI uses, because
+// that code page has no encoding for those characters. Nothing the two sides could
+// agree on would change it — the writer has already replaced them by the time this
+// reader sees the file. Production never depends on it either: every value written
+// through the profile API is a flag, a language tag or a hex hash. Non-ASCII reaches
+// an INI only in the shipped payload, which is UTF-8 on disk and is read, never
+// written, by this program; TestIniReader covers that case from the file side.
 void TestIniWriteReadAgreement() {
     wchar_t tempDir[MAX_PATH] = {};
     if (GetTempPathW(MAX_PATH, tempDir) == 0) {
@@ -1342,28 +1353,24 @@ void TestIniWriteReadAgreement() {
         L"has; semicolon",   // data, not a comment, once it is past the key
         L"has#hash",         // likewise
         L"a*b?c**d",         // a glob pattern, which is what these files hold
-        L"CJK",              // replaced below with non-ASCII
         L"",                 // an empty value
     };
-    std::vector<std::wstring> toWrite;
-    for (const wchar_t* v : values) toWrite.push_back(v);
-    toWrite[7] = L"\u4E2D\u6587\u8DEF\u5F84";  // non-ASCII, as an install path may be
 
-    for (size_t i = 0; i < toWrite.size(); ++i) {
+    for (size_t i = 0; i < std::size(values); ++i) {
         const std::wstring key = L"Key" + std::to_wstring(i);
-        WritePrivateProfileStringW(L"General", key.c_str(), toWrite[i].c_str(), path.c_str());
+        WritePrivateProfileStringW(L"General", key.c_str(), values[i], path.c_str());
     }
 
     // Read them all back through the project's own reader.
     const std::vector<Ini::Section> sections = Ini::Read(path);
-    for (size_t i = 0; i < toWrite.size(); ++i) {
+    for (size_t i = 0; i < std::size(values); ++i) {
         const std::wstring key = L"Key" + std::to_wstring(i);
         const std::wstring got = Ini::Value(sections, L"General", key.c_str());
-        if (got != toWrite[i]) {
+        if (got != values[i]) {
             std::printf("FAIL: [General] %ls round-trip\n  wrote: \"%ls\"\n  read:  \"%ls\"\n",
-                        key.c_str(), toWrite[i].c_str(), got.c_str());
+                        key.c_str(), values[i], got.c_str());
         }
-        CHECK(got == toWrite[i]);
+        CHECK(got == values[i]);
     }
 
     // Leading and trailing whitespace is stripped — by BOTH sides, and that is exactly
@@ -1745,6 +1752,38 @@ void TestIniReader() {
     CHECK(Ini::Int(ini, L"Paths", L"Hosts", 7) == 7);  // all 'a', not a number
 
     _wremove(path.c_str());
+
+    // Non-ASCII in a UTF-8 file with no byte order mark — the shape every shipped
+    // payload INI has, and the only way non-ASCII reaches this reader.
+    //
+    // This is the read side of what TestIniWriteReadAgreement deliberately does not
+    // assert. The profile API writes a BOM-less file in the machine's ANSI code page,
+    // so a non-ASCII value put through it survives on a 936 machine and is destroyed on
+    // the 1252 runner CI uses. Reading is not exposed to that: UTF-8 is tried first and
+    // strictly, so the same bytes decode to the same characters on every machine. The
+    // bytes are written out by hand here rather than through any API, which is what
+    // makes the test independent of the code page it happens to run under.
+    {
+        const std::wstring utf8Path = std::wstring(tempDir) + L"snib_ini_utf8.ini";
+        const std::wstring installDir = L"C:\\\u4E2D\u6587\u8DEF\u5F84\\SNIB";
+
+        HANDLE f = CreateFileW(utf8Path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                               FILE_ATTRIBUTE_NORMAL, nullptr);
+        CHECK(f != INVALID_HANDLE_VALUE);
+        if (f != INVALID_HANDLE_VALUE) {
+            const std::string bytes =
+                "[Paths]\r\nInstallDir=" + WideToUtf8(installDir) + "\r\n";
+            DWORD written = 0;
+            static_cast<void>(WriteFile(f, bytes.data(), static_cast<DWORD>(bytes.size()),
+                                        &written, nullptr));
+            CloseHandle(f);
+        }
+
+        const std::vector<Ini::Section> utf8 = Ini::Read(utf8Path);
+        CHECK(Ini::Value(utf8, L"Paths", L"InstallDir") == installDir);
+
+        _wremove(utf8Path.c_str());
+    }
 }
 
 }  // namespace
